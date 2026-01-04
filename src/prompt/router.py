@@ -30,7 +30,7 @@ ROUTER_PROMPT = dedent(
 - 출력은 JSON 한 줄로만 응답한다.
 
 출력 형식(필수):
-{"route":"general|direct|reuse|sql_required","reason":"판단 근거"}
+{{"route":"general|direct|reuse|sql_required","reason":"판단 근거"}}
 
 [사용자 질문]
 {user_message}

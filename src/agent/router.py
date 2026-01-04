@@ -189,6 +189,32 @@ class RouterLLM:
         self._model = model
         self._temperature = temperature
 
+    def _invoke_router(self, prompt: str, *, force_json: bool) -> str:
+        """
+        라우터 전용 LLM 호출을 수행한다.
+
+        Args:
+            prompt: 라우팅 프롬프트.
+            force_json: JSON 응답 강제 여부.
+
+        Returns:
+            LLM 응답 문자열.
+        """
+
+        request: dict[str, Any] = {
+            "model": self._model,
+            "temperature": self._temperature,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        if force_json:
+            request["response_format"] = {"type": "json_object"}
+
+        response = self._client.chat.completions.create(**request)
+        return response.choices[0].message.content or ""
+
     def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:
         """
         라우팅을 결정한다.
@@ -205,45 +231,41 @@ class RouterLLM:
         if _is_general_question(context.user_message):
             return RouterResult(route=Route.GENERAL, metric_name=None, reason="일반 안내 질문 감지")
 
+        prompt = ROUTER_PROMPT.format(
+            user_message=context.user_message,
+            has_previous=context.has_previous,
+            last_result_schema=context.last_result_schema or [],
+            last_sql=context.last_sql or "없음",
+            last_slots=context.last_slots or {},
+            available_metrics=context.available_metrics,
+        )
         try:
-            prompt = ROUTER_PROMPT.format(
-                user_message=context.user_message,
-                has_previous=context.has_previous,
-                last_result_schema=context.last_result_schema or [],
-                last_sql=context.last_sql or "없음",
-                last_slots=context.last_slots or {},
-                available_metrics=context.available_metrics,
-            )
-            response = self._client.chat.completions.create(
-                model=self._model,
-                temperature=self._temperature,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            content = response.choices[0].message.content or ""
+            content = self._invoke_router(prompt, force_json=True)
             parsed = _parse_router_json(content)
-            route_value = parsed.get("route")
-            reason = parsed.get("reason", "라우터 판단")
-
-            if route_value not in {route.value for route in Route}:
+        except Exception:  # noqa: BLE001
+            try:
+                content = self._invoke_router(prompt, force_json=False)
+                parsed = _parse_router_json(content)
+            except Exception:  # noqa: BLE001
                 return _fallback_route(
                     context.user_message,
                     registry,
                     context.has_previous,
-                    reason="라우터 응답이 유효하지 않아 폴백 처리",
+                    reason="라우터 응답 파싱 실패로 폴백 처리",
                 )
 
-            route = Route(route_value)
-        except Exception:  # noqa: BLE001
+        route_value = parsed.get("route")
+        reason = parsed.get("reason", "라우터 판단")
+
+        if route_value not in {route.value for route in Route}:
             return _fallback_route(
                 context.user_message,
                 registry,
                 context.has_previous,
-                reason="라우터 응답 파싱 실패로 폴백 처리",
+                reason="라우터 응답이 유효하지 않아 폴백 처리",
             )
+
+        route = Route(route_value)
 
         if route == Route.REUSE and not context.has_previous:
             return RouterResult(route=Route.SQL_REQUIRED, metric_name=metric_name, reason="이전 결과 없음")
@@ -354,15 +376,24 @@ def _parse_router_json(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("```", maxsplit=2)[1].strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
 
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
-        if start == -1 or end == -1 or start >= end:
-            raise
-        return json.loads(cleaned[start : end + 1])
+        if start != -1 and end != -1 and start < end:
+            return json.loads(cleaned[start : end + 1])
+
+        match = re.search(r"route\\s*[:=]\\s*([a-z_]+)", cleaned, re.IGNORECASE)
+        if match:
+            reason_match = re.search(r"reason\\s*[:=]\\s*(.+)", cleaned, re.IGNORECASE)
+            reason = reason_match.group(1).strip() if reason_match else "라우터 판단"
+            return {"route": match.group(1).lower(), "reason": reason}
+
+        raise
 
 
 def _detect_metric(text: str, registry: MetricsRegistry) -> str | None:
