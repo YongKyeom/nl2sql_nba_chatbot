@@ -184,10 +184,10 @@ def _render_messages(messages: list[dict[str, object]]) -> None:
 
             st.write(message["content"])
 
-            if sql:
-                st.code(sql, language="sql")
+            # if sql:
+            #     st.code(sql, language="sql")
             if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
-                st.dataframe(dataframe, use_container_width=True)
+                # st.dataframe(dataframe, use_container_width=True)
                 st.download_button(
                     "CSV 다운로드",
                     dataframe.to_csv(index=False).encode("utf-8"),
