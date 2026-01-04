@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pandas as pd
@@ -253,7 +254,7 @@ def _handle_agent_result(
             message_index=message_index,
         )
 
-    st.write(final_answer)
+    st.write_stream(_stream_text(final_answer))
 
     if sql:
         st.code(sql, language="sql")
@@ -407,6 +408,26 @@ def _get_user_id() -> str | None:
             return str(value)
 
     return None
+
+
+def _stream_text(text: str, chunk_size: int = 24) -> Iterator[str]:
+    """
+    텍스트를 일정 크기씩 나눠 스트리밍용 청크로 반환한다.
+
+    Args:
+        text: 원본 텍스트.
+        chunk_size: 한 번에 출력할 문자 수.
+
+    Yields:
+        텍스트 청크.
+    """
+
+    if chunk_size <= 0:
+        yield text
+        return
+
+    for offset in range(0, len(text), chunk_size):
+        yield text[offset : offset + chunk_size]
 
 
 if __name__ == "__main__":
