@@ -43,7 +43,7 @@ streamlit run src/app.py
 ## Streamlit UI
 
 - 모델: `gpt-4o-mini` 고정(선택형 UI 유지)
-- Temperature: 0.0 ~ 0.3
+- Temperature: 0.1 ~ 2.0
 - Dataset Info: 데이터셋 요약/테이블/지표 목록 표시
 - Dump Schema: `schema.json` / `schema.md` 갱신
 - Reset Conversation: 단기 메모리 초기화
