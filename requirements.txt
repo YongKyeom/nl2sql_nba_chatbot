@@ -1,0 +1,35 @@
+# -----------------------------
+# UI (Streamlit)
+# -----------------------------
+streamlit~=1.52.2
+streamlit-aggrid~=1.2.1
+
+# -----------------------------
+# Data / Config
+# -----------------------------
+pandas>=2.2,<3
+numpy>=1.26,<3
+pyyaml>=6.0,<7
+python-dotenv>=1.0,<2
+pydantic>=2.7,<3
+tenacity>=8.2,<10
+rich>=13.7,<14
+
+# -----------------------------
+# LLM / Agent (OpenAI + LangChain/LangGraph)
+# -----------------------------
+openai~=2.14.0
+langchain~=1.2.0
+langchain-openai~=1.1.6
+langgraph~=1.0.5
+langgraph-checkpoint-sqlite~=3.0.1
+langchain-community~=0.4.1
+langchain-text-splitters~=1.1.0
+tiktoken>=0.8,<1
+
+# -----------------------------
+# DB / SQL safety
+# -----------------------------
+sqlalchemy>=2.0,<3
+sqlglot~=28.5.0
+aiosqlite>=0.20,<1

@@ -1,0 +1,893 @@
+metrics:
+  - name: triple_double
+    aliases:
+      - "트리플더블"
+      - "트리플 더블"
+      - "트리더"
+      - "3더블"
+      - "triple double"
+      - "triple-double"
+      - "TD"
+    description_ko: "팀 경기 합계 기준으로 득점/리바운드/어시스트/스틸/블록 중 3개 이상 항목이 10 이상인 경기 횟수 지표다. 데이터가 팀 합계만 제공되므로 팀 단위로 계산한다."
+    formula_ko: "한 경기에서 (pts, reb, ast, stl, blk) 중 10 이상인 항목 개수 >= 3"
+    required_tables: ["game"]
+    required_columns: ["game_id", "game_date", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "reb_home", "ast_home", "stl_home", "blk_home", "pts_away", "reb_away", "ast_away", "stl_away", "blk_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT game_id, game_date, team_abbreviation_home AS team_abbreviation,
+               pts_home AS pts, reb_home AS reb, ast_home AS ast, stl_home AS stl, blk_home AS blk
+        FROM game
+        UNION ALL
+        SELECT game_id, game_date, team_abbreviation_away AS team_abbreviation,
+               pts_away AS pts, reb_away AS reb, ast_away AS ast, stl_away AS stl, blk_away AS blk
+        FROM game
+      ),
+      flags AS (
+        SELECT team_abbreviation,
+               (CASE WHEN pts >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN reb >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN ast >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN stl >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN blk >= 10 THEN 1 ELSE 0 END) AS double_count
+        FROM team_games
+      )
+      SELECT team_abbreviation, SUM(CASE WHEN double_count >= 3 THEN 1 ELSE 0 END) AS triple_double_games
+      FROM flags
+      GROUP BY team_abbreviation
+      ORDER BY triple_double_games DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: double_double
+    aliases:
+      - "더블더블"
+      - "더블 더블"
+      - "2더블"
+      - "double double"
+      - "double-double"
+      - "DD"
+    description_ko: "팀 경기 합계 기준으로 득점/리바운드/어시스트/스틸/블록 중 2개 이상 항목이 10 이상인 경기 횟수 지표다. 팀 단위 데이터에 맞춰 계산한다."
+    formula_ko: "한 경기에서 (pts, reb, ast, stl, blk) 중 10 이상인 항목 개수 >= 2"
+    required_tables: ["game"]
+    required_columns: ["game_id", "game_date", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "reb_home", "ast_home", "stl_home", "blk_home", "pts_away", "reb_away", "ast_away", "stl_away", "blk_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT game_id, game_date, team_abbreviation_home AS team_abbreviation,
+               pts_home AS pts, reb_home AS reb, ast_home AS ast, stl_home AS stl, blk_home AS blk
+        FROM game
+        UNION ALL
+        SELECT game_id, game_date, team_abbreviation_away AS team_abbreviation,
+               pts_away AS pts, reb_away AS reb, ast_away AS ast, stl_away AS stl, blk_away AS blk
+        FROM game
+      ),
+      flags AS (
+        SELECT team_abbreviation,
+               (CASE WHEN pts >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN reb >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN ast >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN stl >= 10 THEN 1 ELSE 0 END
+                + CASE WHEN blk >= 10 THEN 1 ELSE 0 END) AS double_count
+        FROM team_games
+      )
+      SELECT team_abbreviation, SUM(CASE WHEN double_count >= 2 THEN 1 ELSE 0 END) AS double_double_games
+      FROM flags
+      GROUP BY team_abbreviation
+      ORDER BY double_double_games DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: ts_pct
+    aliases:
+      - "TS%"
+      - "TS"
+      - "ts%"
+      - "true shooting"
+      - "true shooting%"
+      - "트루슈팅"
+      - "트루 슈팅"
+      - "트루슈팅%"
+    description_ko: "팀 경기 합계 기준의 트루 슈팅 비율이다. 2점/3점/자유투 효율을 하나의 비율로 요약한다."
+    formula_ko: "TS% = PTS / (2 * (FGA + 0.44 * FTA))"
+    required_tables: ["game"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away", "fga_home", "fga_away", "fta_home", "fta_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT team_abbreviation_home AS team_abbreviation, pts_home AS pts, fga_home AS fga, fta_home AS fta
+        FROM game
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, pts_away AS pts, fga_away AS fga, fta_away AS fta
+        FROM game
+      )
+      SELECT team_abbreviation,
+             AVG(pts / (2.0 * (fga + 0.44 * fta))) AS ts_pct
+      FROM team_games
+      WHERE fga > 0
+      GROUP BY team_abbreviation
+      ORDER BY ts_pct DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: efg_pct
+    aliases:
+      - "eFG%"
+      - "eFG"
+      - "efg%"
+      - "effective fg"
+      - "effective fg%"
+      - "유효 야투"
+      - "유효 야투율"
+      - "이펙티브 필드골"
+    description_ko: "팀 경기 합계 기준의 유효 야투율이다. 3점 슛 가치를 가중치로 반영한다."
+    formula_ko: "eFG% = (FGM + 0.5 * FG3M) / FGA"
+    required_tables: ["game"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "fgm_home", "fgm_away", "fg3m_home", "fg3m_away", "fga_home", "fga_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT team_abbreviation_home AS team_abbreviation, fgm_home AS fgm, fg3m_home AS fg3m, fga_home AS fga
+        FROM game
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, fgm_away AS fgm, fg3m_away AS fg3m, fga_away AS fga
+        FROM game
+      )
+      SELECT team_abbreviation,
+             AVG((fgm + 0.5 * fg3m) / fga) AS efg_pct
+      FROM team_games
+      WHERE fga > 0
+      GROUP BY team_abbreviation
+      ORDER BY efg_pct DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: win_pct
+    aliases:
+      - "승률"
+      - "승률%"
+      - "승률 순위"
+      - "팀 승률"
+      - "win percentage"
+      - "win pct"
+      - "win%"
+    description_ko: "시즌 기준 팀 승률이다. 승수와 패수를 기준으로 계산한다."
+    formula_ko: "WIN% = W / (W + L)"
+    required_tables: ["game"]
+    required_columns: ["season_id", "season_type", "team_abbreviation_home", "team_name_home", "wl_home", "team_abbreviation_away", "team_name_away", "wl_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, wl_home AS wl
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, wl_away AS wl
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+      )
+      SELECT team_name,
+             team_abbreviation,
+             '{season_year}' AS season_year,
+             SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) AS w,
+             SUM(CASE WHEN wl = 'L' THEN 1 ELSE 0 END) AS l,
+             ROUND(1.0 * SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) / COUNT(*), 3) AS pct
+      FROM team_games
+      GROUP BY team_abbreviation, team_name
+      ORDER BY pct DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 10
+      min_minutes: null
+
+  - name: point_diff
+    aliases:
+      - "득실차"
+      - "평균 득실차"
+      - "점수차"
+      - "point differential"
+      - "point diff"
+      - "score diff"
+    description_ko: "팀 경기 합계 기준 평균 득실차다. 득점에서 실점을 뺀 값을 경기 단위로 평균낸다."
+    formula_ko: "AVG(PTS_FOR - PTS_AGAINST)"
+    required_tables: ["game"]
+    required_columns: ["season_id", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, pts_home AS pts_for, pts_away AS pts_against
+        FROM game
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, pts_away AS pts_for, pts_home AS pts_against
+        FROM game
+      )
+      SELECT team_abbreviation, AVG(pts_for - pts_against) AS avg_point_diff
+      FROM team_games
+      WHERE season_id = '{season_id}'
+      GROUP BY team_abbreviation
+      ORDER BY avg_point_diff DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: last_n_games
+    aliases:
+      - "최근 N경기"
+      - "최근 경기"
+      - "최근 경기 결과"
+      - "최근 5경기"
+      - "최근 10경기"
+      - "last n games"
+      - "last games"
+      - "recent games"
+    description_ko: "특정 팀의 최근 N경기 결과와 득실 데이터를 조회한다. 멀티턴에서 N 값만 변경해 재사용하기 좋다."
+    formula_ko: "최근 날짜 기준으로 N건 정렬"
+    required_tables: ["game"]
+    required_columns: ["game_date", "team_abbreviation_home", "team_abbreviation_away", "matchup_home", "matchup_away", "wl_home", "wl_away", "pts_home", "pts_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT game_date, team_abbreviation_home AS team_abbreviation, matchup_home AS matchup, wl_home AS wl,
+               pts_home AS pts, pts_away AS opp_pts
+        FROM game
+        UNION ALL
+        SELECT game_date, team_abbreviation_away AS team_abbreviation, matchup_away AS matchup, wl_away AS wl,
+               pts_away AS pts, pts_home AS opp_pts
+        FROM game
+      )
+      SELECT *
+      FROM team_games
+      WHERE team_abbreviation = '{team_abbreviation}'
+      ORDER BY game_date DESC
+      LIMIT {n};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: back_to_back
+    aliases:
+      - "백투백"
+      - "백투백 일정"
+      - "백투백 경기"
+      - "연전"
+      - "back-to-back"
+      - "back to back"
+      - "b2b"
+    description_ko: "팀이 연속된 날짜에 경기를 치른 횟수다. 일정 강도를 파악할 때 사용한다."
+    formula_ko: "이전 경기 날짜와의 차이가 1일인 경기 수"
+    required_tables: ["game"]
+    required_columns: ["game_date", "team_id_home", "team_id_away", "team_abbreviation_home", "team_abbreviation_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT game_date, team_id_home AS team_id, team_abbreviation_home AS team_abbreviation
+        FROM game
+        UNION ALL
+        SELECT game_date, team_id_away AS team_id, team_abbreviation_away AS team_abbreviation
+        FROM game
+      ),
+      ordered AS (
+        SELECT team_id, team_abbreviation, date(game_date) AS game_date,
+               LAG(date(game_date)) OVER (PARTITION BY team_id ORDER BY date(game_date)) AS prev_date
+        FROM team_games
+      )
+      SELECT team_abbreviation, COUNT(*) AS back_to_back_games
+      FROM ordered
+      WHERE prev_date IS NOT NULL AND julianday(game_date) - julianday(prev_date) = 1
+      GROUP BY team_abbreviation
+      ORDER BY back_to_back_games DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: top_scorers
+    aliases:
+      - "득점 상위"
+      - "득점 TOP"
+      - "득점 순위"
+      - "득점 리더"
+      - "득점 랭킹"
+      - "points leaders"
+      - "top scorers"
+      - "팀 득점 상위"
+    description_ko: "시즌 팀 평균 득점(PTS/경기) 상위 팀 목록이다. 선수 데이터가 없으므로 팀 단위로 제공한다."
+    formula_ko: "팀 평균 득점 PTS/경기 기준 내림차순"
+    required_tables: ["game"]
+    required_columns: ["season_id", "season_type", "team_abbreviation_home", "team_name_home", "pts_home", "team_abbreviation_away", "team_name_away", "pts_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, pts_home AS pts
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, pts_away AS pts
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+      )
+      SELECT team_name,
+             team_abbreviation,
+             '{season_year}' AS season_year,
+             AVG(pts) AS pts_pg
+      FROM team_games
+      GROUP BY team_abbreviation, team_name
+      ORDER BY pts_pg DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 10
+      min_minutes: null
+
+  - name: top_rebounders
+    aliases:
+      - "리바운드 상위"
+      - "리바운드 TOP"
+      - "리바운드 순위"
+      - "리바운드 리더"
+      - "reb leaders"
+      - "top rebounders"
+      - "팀 리바운드 상위"
+    description_ko: "시즌 팀 평균 리바운드 상위 팀 목록이다."
+    formula_ko: "팀 평균 리바운드 REB/경기 기준 내림차순"
+    required_tables: ["game"]
+    required_columns: ["season_id", "season_type", "team_abbreviation_home", "team_name_home", "reb_home", "team_abbreviation_away", "team_name_away", "reb_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, reb_home AS reb
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, reb_away AS reb
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+      )
+      SELECT team_name,
+             team_abbreviation,
+             '{season_year}' AS season_year,
+             AVG(reb) AS reb_pg
+      FROM team_games
+      GROUP BY team_abbreviation, team_name
+      ORDER BY reb_pg DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 10
+      min_minutes: null
+
+  - name: top_assisters
+    aliases:
+      - "어시스트 상위"
+      - "어시스트 TOP"
+      - "어시스트 순위"
+      - "어시스트 리더"
+      - "assist leaders"
+      - "top assisters"
+      - "팀 어시스트 상위"
+    description_ko: "시즌 팀 평균 어시스트 상위 팀 목록이다."
+    formula_ko: "팀 평균 어시스트 AST/경기 기준 내림차순"
+    required_tables: ["game"]
+    required_columns: ["season_id", "season_type", "team_abbreviation_home", "team_name_home", "ast_home", "team_abbreviation_away", "team_name_away", "ast_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, ast_home AS ast
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, ast_away AS ast
+        FROM game
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+      )
+      SELECT team_name,
+             team_abbreviation,
+             '{season_year}' AS season_year,
+             AVG(ast) AS ast_pg
+      FROM team_games
+      GROUP BY team_abbreviation, team_name
+      ORDER BY ast_pg DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 10
+      min_minutes: null
+
+  - name: home_away_split
+    aliases:
+      - "홈원정 분할"
+      - "홈 원정 분할"
+      - "홈원정 스플릿"
+      - "home away split"
+      - "home/away split"
+      - "홈 원정 비교"
+      - "홈/원정 비교"
+    description_ko: "팀의 홈/원정 평균 득점, 리바운드, 어시스트를 비교한다."
+    formula_ko: "홈/원정 구분 후 평균값 계산"
+    required_tables: ["game"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away", "reb_home", "reb_away", "ast_home", "ast_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT team_abbreviation_home AS team_abbreviation, 'home' AS location, pts_home AS pts, reb_home AS reb, ast_home AS ast
+        FROM game
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, 'away' AS location, pts_away AS pts, reb_away AS reb, ast_away AS ast
+        FROM game
+      )
+      SELECT team_abbreviation, location, AVG(pts) AS avg_pts, AVG(reb) AS avg_reb, AVG(ast) AS avg_ast
+      FROM team_games
+      GROUP BY team_abbreviation, location
+      ORDER BY team_abbreviation, location
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: streak
+    aliases:
+      - "연승"
+      - "연패"
+      - "연승/연패"
+      - "승패 흐름"
+      - "W/L 흐름"
+      - "최근 흐름"
+      - "streak"
+    description_ko: "팀의 최근 N경기 승패 시퀀스를 문자열로 요약한다. W/L 흐름을 빠르게 파악할 때 사용한다."
+    formula_ko: "최근 N경기 결과를 날짜 역순으로 나열"
+    required_tables: ["game"]
+    required_columns: ["game_date", "team_abbreviation_home", "team_abbreviation_away", "wl_home", "wl_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT game_date, team_abbreviation_home AS team_abbreviation, wl_home AS wl
+        FROM game
+        UNION ALL
+        SELECT game_date, team_abbreviation_away AS team_abbreviation, wl_away AS wl
+        FROM game
+      ),
+      ordered AS (
+        SELECT team_abbreviation, wl
+        FROM team_games
+        WHERE team_abbreviation = '{team_abbreviation}'
+        ORDER BY game_date DESC
+        LIMIT {n}
+      )
+      SELECT team_abbreviation, GROUP_CONCAT(wl, '') AS recent_streak
+      FROM ordered;
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: close_games
+    aliases:
+      - "접전"
+      - "접전 경기"
+      - "박빙"
+      - "클로즈 게임"
+      - "close game"
+      - "close games"
+      - "5점차"
+      - "5점 이하"
+    description_ko: "점수차가 작은 경기 목록이다. 기본 임계값은 5점 이하로 본다."
+    formula_ko: "ABS(PTS_HOME - PTS_AWAY) <= threshold"
+    required_tables: ["game"]
+    required_columns: ["game_id", "game_date", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away"]
+    sql_template: |
+      SELECT game_id, game_date, team_abbreviation_home, team_abbreviation_away,
+             pts_home, pts_away, ABS(pts_home - pts_away) AS point_diff
+      FROM game
+      WHERE ABS(pts_home - pts_away) <= {threshold}
+      ORDER BY game_date DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: blowout_games
+    aliases:
+      - "대승"
+      - "대패"
+      - "블로우아웃"
+      - "blowout"
+      - "20점차"
+      - "20점 이상"
+      - "대승 경기"
+    description_ko: "점수차가 큰 경기 목록이다. 기본 임계값은 20점 이상으로 본다."
+    formula_ko: "ABS(PTS_HOME - PTS_AWAY) >= threshold"
+    required_tables: ["game"]
+    required_columns: ["game_id", "game_date", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away"]
+    sql_template: |
+      SELECT game_id, game_date, team_abbreviation_home, team_abbreviation_away,
+             pts_home, pts_away, ABS(pts_home - pts_away) AS point_diff
+      FROM game
+      WHERE ABS(pts_home - pts_away) >= {threshold}
+      ORDER BY game_date DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: attendance_top_games
+    aliases:
+      - "관중"
+      - "관중수"
+      - "관중 상위"
+      - "관중 순위"
+      - "attendance"
+      - "attendance top"
+      - "관중 많은 경기"
+    description_ko: "관중 수가 많은 경기 목록이다. 흥행 지표로 활용한다."
+    formula_ko: "ATTENDANCE 내림차순 정렬"
+    required_tables: ["game_info", "game"]
+    required_columns: ["game_id", "game_date", "attendance", "team_abbreviation_home", "team_abbreviation_away"]
+    sql_template: |
+      SELECT gi.game_date, g.team_abbreviation_home, g.team_abbreviation_away, gi.attendance
+      FROM game_info AS gi
+      JOIN game AS g ON g.game_id = gi.game_id
+      ORDER BY gi.attendance DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: points_in_paint
+    aliases:
+      - "페인트존 득점"
+      - "페인트 득점"
+      - "페인트존"
+      - "points in paint"
+      - "PIP"
+    description_ko: "팀의 페인트존 득점 평균이다. 인사이드 지배력을 판단할 때 쓴다."
+    formula_ko: "PTS_PAINT 평균"
+    required_tables: ["other_stats"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_paint_home", "pts_paint_away"]
+    sql_template: |
+      WITH team_stats AS (
+        SELECT team_abbreviation_home AS team_abbreviation, pts_paint_home AS pts_paint
+        FROM other_stats
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, pts_paint_away AS pts_paint
+        FROM other_stats
+      )
+      SELECT team_abbreviation, AVG(pts_paint) AS avg_pts_paint
+      FROM team_stats
+      GROUP BY team_abbreviation
+      ORDER BY avg_pts_paint DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: fast_break_points
+    aliases:
+      - "속공 득점"
+      - "속공 포인트"
+      - "전환 득점"
+      - "fast break"
+      - "fast break points"
+      - "FB points"
+    description_ko: "팀의 속공 득점 평균이다. 전환 공격 효율을 본다."
+    formula_ko: "PTS_FB 평균"
+    required_tables: ["other_stats"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_fb_home", "pts_fb_away"]
+    sql_template: |
+      WITH team_stats AS (
+        SELECT team_abbreviation_home AS team_abbreviation, pts_fb_home AS pts_fb
+        FROM other_stats
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, pts_fb_away AS pts_fb
+        FROM other_stats
+      )
+      SELECT team_abbreviation, AVG(pts_fb) AS avg_fast_break_pts
+      FROM team_stats
+      GROUP BY team_abbreviation
+      ORDER BY avg_fast_break_pts DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: second_chance_points
+    aliases:
+      - "세컨드찬스"
+      - "세컨드 찬스"
+      - "세컨드찬스 득점"
+      - "second chance"
+      - "second chance points"
+      - "2nd chance"
+    description_ko: "팀의 세컨드 찬스 득점 평균이다. 공격 리바운드 후 득점 기여를 본다."
+    formula_ko: "PTS_2ND_CHANCE 평균"
+    required_tables: ["other_stats"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_2nd_chance_home", "pts_2nd_chance_away"]
+    sql_template: |
+      WITH team_stats AS (
+        SELECT team_abbreviation_home AS team_abbreviation, pts_2nd_chance_home AS pts_2nd_chance
+        FROM other_stats
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, pts_2nd_chance_away AS pts_2nd_chance
+        FROM other_stats
+      )
+      SELECT team_abbreviation, AVG(pts_2nd_chance) AS avg_second_chance_pts
+      FROM team_stats
+      GROUP BY team_abbreviation
+      ORDER BY avg_second_chance_pts DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: turnover_points
+    aliases:
+      - "턴오버 득점"
+      - "턴오버 후 득점"
+      - "points off turnovers"
+      - "포인트 오프 턴오버"
+      - "POT"
+    description_ko: "팀의 턴오버 이후 득점 평균이다. 상대 실수를 얼마나 득점으로 전환하는지 본다."
+    formula_ko: "PTS_OFF_TO 평균"
+    required_tables: ["other_stats"]
+    required_columns: ["team_abbreviation_home", "team_abbreviation_away", "pts_off_to_home", "pts_off_to_away"]
+    sql_template: |
+      WITH team_stats AS (
+        SELECT team_abbreviation_home AS team_abbreviation, pts_off_to_home AS pts_off_to
+        FROM other_stats
+        UNION ALL
+        SELECT team_abbreviation_away AS team_abbreviation, pts_off_to_away AS pts_off_to
+        FROM other_stats
+      )
+      SELECT team_abbreviation, AVG(pts_off_to) AS avg_turnover_pts
+      FROM team_stats
+      GROUP BY team_abbreviation
+      ORDER BY avg_turnover_pts DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 5
+      min_minutes: null
+
+  - name: draft_first_pick_avg_tenure
+    aliases:
+      - "드래프트 1픽 평균 커리어"
+      - "드래프트 1픽"
+      - "드래프트 1순위"
+      - "전체 1픽"
+      - "1픽 평균 커리어"
+      - "1픽 평균 경력"
+      - "overall 1 pick"
+      - "1st pick"
+      - "top pick avg tenure"
+    description_ko: "드래프트 전체 1픽 선수들의 평균 NBA 경력(시즌 수)을 계산한다. 시즌 경험치가 있는 선수만 집계한다."
+    formula_ko: "AVG(season_exp)"
+    required_tables: ["draft_history", "common_player_info"]
+    required_columns: ["person_id", "overall_pick", "season_exp"]
+    sql_template: |
+      SELECT AVG(CAST(cpi.season_exp AS REAL)) AS avg_season_exp
+      FROM draft_history AS dh
+      JOIN common_player_info AS cpi ON cpi.person_id = dh.person_id
+      WHERE dh.overall_pick = 1
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: draft_picks_by_year
+    aliases:
+      - "연도별 드래프트"
+      - "드래프트 연도"
+      - "드래프트 클래스"
+      - "드래프트 픽 리스트"
+      - "드래프트 전체 픽"
+      - "draft class"
+      - "draft by year"
+      - "draft picks"
+    description_ko: "특정 시즌 드래프트 전체 픽 목록을 조회한다."
+    formula_ko: "season 기준 정렬"
+    required_tables: ["draft_history"]
+    required_columns: ["season", "overall_pick", "player_name", "team_name", "team_abbreviation", "round_number", "round_pick"]
+    sql_template: |
+      SELECT season, overall_pick, player_name, team_name, team_abbreviation, round_number, round_pick
+      FROM draft_history
+      WHERE season = '{season}'
+      ORDER BY overall_pick
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: draft_team_first_round_picks
+    aliases:
+      - "팀 1라운드 지명"
+      - "1라 지명"
+      - "1라 픽"
+      - "1라운드 픽"
+      - "1라운드 지명"
+      - "first round picks"
+      - "1st round picks"
+      - "팀 1라 픽"
+    description_ko: "특정 팀이 1라운드에서 지명한 선수 목록을 조회한다."
+    formula_ko: "team_abbreviation + round_number=1"
+    required_tables: ["draft_history"]
+    required_columns: ["season", "overall_pick", "player_name", "team_abbreviation", "round_number"]
+    sql_template: |
+      SELECT season, overall_pick, player_name, team_abbreviation
+      FROM draft_history
+      WHERE team_abbreviation = '{team_abbreviation}' AND round_number = 1
+      ORDER BY season DESC, overall_pick
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: player_profile
+    aliases:
+      - "선수 프로필"
+      - "선수 정보"
+      - "선수 소개"
+      - "선수 신체정보"
+      - "player profile"
+      - "player bio"
+      - "선수 바이오"
+    description_ko: "선수의 기본 프로필(포지션, 신장, 출신 등)을 조회한다."
+    formula_ko: "이름 부분 일치 검색"
+    required_tables: ["common_player_info"]
+    required_columns: ["display_first_last", "position", "height", "weight", "country", "school", "season_exp", "from_year", "to_year", "team_name", "team_abbreviation"]
+    sql_template: |
+      SELECT display_first_last, position, height, weight, country, school, season_exp, from_year, to_year, team_name, team_abbreviation
+      FROM common_player_info
+      WHERE display_first_last LIKE '%{player_name}%'
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: player_career_length
+    aliases:
+      - "선수 커리어 길이"
+      - "커리어 길이"
+      - "커리어 기간"
+      - "NBA 경력"
+      - "시즌 수"
+      - "career length"
+      - "career span"
+    description_ko: "선수의 NBA 경력(시즌 수)을 조회한다."
+    formula_ko: "season_exp 또는 (to_year - from_year + 1)"
+    required_tables: ["common_player_info"]
+    required_columns: ["display_first_last", "season_exp", "from_year", "to_year"]
+    sql_template: |
+      SELECT display_first_last, season_exp, from_year, to_year
+      FROM common_player_info
+      WHERE display_first_last LIKE '%{player_name}%'
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: player_combine_stats
+    aliases:
+      - "컴바인"
+      - "컴바인 기록"
+      - "신체 측정"
+      - "측정치"
+      - "combine stats"
+      - "combine"
+      - "draft combine"
+    description_ko: "드래프트 컴바인 기록을 조회한다."
+    formula_ko: "player_name 부분 일치 검색"
+    required_tables: ["draft_combine_stats"]
+    required_columns: ["player_name", "position", "height_wo_shoes", "height_w_shoes", "weight", "wingspan", "standing_reach", "body_fat_pct", "lane_agility_time", "three_quarter_sprint", "bench_press"]
+    sql_template: |
+      SELECT player_name, position, height_wo_shoes, height_w_shoes, weight, wingspan, standing_reach, body_fat_pct,
+             lane_agility_time, three_quarter_sprint, bench_press
+      FROM draft_combine_stats
+      WHERE player_name LIKE '%{player_name}%'
+      ORDER BY season DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: active_roster_by_team
+    aliases:
+      - "로스터"
+      - "팀 로스터"
+      - "현재 로스터"
+      - "선수 명단"
+      - "로스터 현황"
+      - "active roster"
+      - "active players"
+    description_ko: "특정 팀의 현재 로스터(Active)를 조회한다."
+    formula_ko: "rosterstatus='Active'"
+    required_tables: ["common_player_info"]
+    required_columns: ["display_first_last", "position", "jersey", "rosterstatus", "team_abbreviation"]
+    sql_template: |
+      SELECT display_first_last, position, jersey, rosterstatus
+      FROM common_player_info
+      WHERE team_abbreviation = '{team_abbreviation}' AND rosterstatus = 'Active'
+      ORDER BY display_first_last
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: player_country_distribution
+    aliases:
+      - "국가별 선수"
+      - "국적 분포"
+      - "선수 국적"
+      - "country distribution"
+      - "country count"
+      - "국가별 분포"
+    description_ko: "국가별 선수 분포를 집계한다."
+    formula_ko: "COUNT(*) BY country"
+    required_tables: ["common_player_info"]
+    required_columns: ["country"]
+    sql_template: |
+      SELECT country, COUNT(*) AS player_count
+      FROM common_player_info
+      GROUP BY country
+      ORDER BY player_count DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: team_head_to_head
+    aliases:
+      - "팀 맞대결"
+      - "맞대결"
+      - "상대 전적"
+      - "팀간 전적"
+      - "vs 기록"
+      - "head to head"
+      - "H2H"
+    description_ko: "두 팀의 맞대결 경기 목록을 조회한다. 홈/원정 구분을 포함한다."
+    formula_ko: "home/away 조합 필터"
+    required_tables: ["game"]
+    required_columns: ["game_id", "game_date", "team_abbreviation_home", "team_abbreviation_away", "pts_home", "pts_away", "wl_home", "wl_away"]
+    sql_template: |
+      SELECT game_id, game_date, team_abbreviation_home, team_abbreviation_away, pts_home, pts_away, wl_home, wl_away
+      FROM game
+      WHERE (team_abbreviation_home = '{team_a}' AND team_abbreviation_away = '{team_b}')
+         OR (team_abbreviation_home = '{team_b}' AND team_abbreviation_away = '{team_a}')
+      ORDER BY game_date DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: inactive_players_by_team
+    aliases:
+      - "결장 선수"
+      - "결장 명단"
+      - "결장자"
+      - "inactive players"
+      - "inactive list"
+    description_ko: "특정 팀의 결장 선수 목록을 조회한다."
+    formula_ko: "team_abbreviation 기준 필터"
+    required_tables: ["inactive_players"]
+    required_columns: ["game_id", "first_name", "last_name", "team_abbreviation", "jersey_num"]
+    sql_template: |
+      SELECT game_id, first_name, last_name, team_abbreviation, jersey_num
+      FROM inactive_players
+      WHERE team_abbreviation = '{team_abbreviation}'
+      ORDER BY game_id DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null
+
+  - name: player_head_to_head_events
+    aliases:
+      - "선수 맞대결 이벤트"
+      - "맞대결 이벤트"
+      - "플레이바이플레이 맞대결"
+      - "h2h 이벤트"
+      - "player head to head"
+    description_ko: "플레이바이플레이에서 두 선수가 동시에 관여한 이벤트 빈도를 집계한다. 실제 경기 스탯 맞대결이 아니라 이벤트 동시 관여 빈도임에 주의한다."
+    formula_ko: "player1_name/2_name 필터 후 COUNT"
+    required_tables: ["play_by_play"]
+    required_columns: ["player1_name", "player2_name", "player3_name", "eventnum", "game_id"]
+    sql_template: |
+      SELECT player1_name, player2_name, COUNT(*) AS event_count
+      FROM play_by_play
+      WHERE (player1_name LIKE '%{player_a}%' AND player2_name LIKE '%{player_b}%')
+         OR (player1_name LIKE '%{player_b}%' AND player2_name LIKE '%{player_a}%')
+      GROUP BY player1_name, player2_name
+      ORDER BY event_count DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: null
+      min_minutes: null

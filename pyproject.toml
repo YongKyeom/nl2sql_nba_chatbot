@@ -1,0 +1,42 @@
+[tool.ruff]
+# Black과 맞추기 위한 line-length
+line-length = 120
+
+# flake8 + isort 역할을 Ruff로 대체
+# E, W: 기본 Error/Warning
+# F: Pyflakes
+# I: isort (import 정렬)
+select = ["E", "W", "F", "I", "C90"]
+
+# 기존 flake8 ignore 목록을 Ruff 형식으로 변환
+# - E262: inline comment spacing
+# - C901: 함수 복잡도 (필요시 다시 켤 수 있음)
+# - E731: lambda 할당 관련 경고
+ignore = ["E262", "E731"]  # "C901"
+
+# flake8 및 isort의 exclude/skip 설정 통합
+exclude = [
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".git",
+    "build",
+    "dist",
+    "result",
+    "data",
+    "log",
+    ".vscode"
+]
+
+[tool.ruff.isort]
+# import 정렬 관련 설정
+force-single-line = false
+known-first-party = []
+known-third-party = []
+lines-after-imports = 2
+order-by-type = false
+relative-imports-order = "closest-to-furthest"
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.mccabe]
+max-complexity = 20  # 말도 안되게 복잡한(if-else, while,...) 모듈 확인
