@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src.agent.chain import AgentDependencies, build_agent_chain
+from src.agent.fewshot_generator import FewshotGenerator
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
 from src.agent.planner import Planner
@@ -98,6 +99,8 @@ class AgentOrchestrator:
                 ResponderConfig(model=resolved_options.model, temperature=resolved_options.responder_temperature)
             ),
             planner=Planner(self.registry),
+            fewshot_generator=FewshotGenerator(model=resolved_options.model, temperature=0.2),
+            fewshot_candidate_limit=config.fewshot_candidate_limit,
             sql_generator=SQLGenerator(model=resolved_options.model, temperature=resolved_options.temperature),
             guard=SQLGuard(config.schema_json_path),
             validator=ResultValidator(),

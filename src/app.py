@@ -582,16 +582,22 @@ class StreamlitChatApp:
                 route = message.get("route")
                 route_reason = message.get("route_reason")
                 planned_slots = message.get("planned_slots")
+                multi_step_plan = message.get("multi_step_plan")
                 last_result_schema = message.get("last_result_schema")
                 sql = message.get("sql")
+                fewshot_examples = message.get("fewshot_examples")
 
-                if message["role"] == "assistant" and (route or route_reason or planned_slots or last_result_schema):
+                if message["role"] == "assistant" and (
+                    route or route_reason or planned_slots or last_result_schema or multi_step_plan
+                ):
                     self._render_thinking_panel(
                         route=route,
                         route_reason=route_reason,
                         planned_slots=planned_slots,
+                        multi_step_plan=multi_step_plan,
                         last_result_schema=last_result_schema,
                         sql=sql,
+                        fewshot_examples=fewshot_examples,
                         message_index=idx,
                     )
 
@@ -676,6 +682,8 @@ class StreamlitChatApp:
         route = result.get("route", "unknown")
         route_reason = result.get("route_reason")
         planned_slots = result.get("planned_slots")
+        multi_step_plan = result.get("multi_step_plan")
+        fewshot_examples = result.get("fewshot_examples")
 
         display_df: pd.DataFrame | None = None
         chart_spec: ChartSpec | None = None
@@ -710,7 +718,9 @@ class StreamlitChatApp:
             "route": route,
             "route_reason": route_reason,
             "planned_slots": planned_slots,
+            "multi_step_plan": multi_step_plan,
             "last_result_schema": result.get("last_result_schema"),
+            "fewshot_examples": fewshot_examples,
         }
         st.session_state.messages.append(assistant_message)
         message_index = len(st.session_state.messages) - 1
@@ -725,6 +735,8 @@ class StreamlitChatApp:
             "last_result_schema": result.get("last_result_schema"),
             "chart_spec": chart_spec,
             "chart_image_path": chart_image_path,
+            "fewshot_examples": fewshot_examples,
+            "multi_step_plan": multi_step_plan,
         }
         if isinstance(display_df, pd.DataFrame):
             chat_meta["dataframe_records"] = display_df.to_dict(orient="records")
@@ -743,8 +755,10 @@ class StreamlitChatApp:
                 route=route,
                 route_reason=route_reason,
                 planned_slots=planned_slots,
+                multi_step_plan=multi_step_plan,
                 last_result_schema=result.get("last_result_schema"),
                 sql=sql,
+                fewshot_examples=fewshot_examples,
                 message_index=message_index,
             )
 
@@ -822,8 +836,10 @@ class StreamlitChatApp:
                         route=state.get("route"),
                         route_reason=state.get("route_reason"),
                         planned_slots=state.get("planned_slots"),
+                        multi_step_plan=state.get("multi_step_plan"),
                         last_result_schema=state.get("last_result_schema"),
                         sql=state.get("sql"),
+                        fewshot_examples=state.get("fewshot_examples"),
                         message_index=len(st.session_state.messages),
                     )
         except Exception:
@@ -839,8 +855,10 @@ class StreamlitChatApp:
                 route=final_state.get("route"),
                 route_reason=final_state.get("route_reason"),
                 planned_slots=final_state.get("planned_slots"),
+                multi_step_plan=final_state.get("multi_step_plan"),
                 last_result_schema=final_state.get("last_result_schema"),
                 sql=final_state.get("sql"),
+                fewshot_examples=final_state.get("fewshot_examples"),
                 message_index=len(st.session_state.messages),
             )
 
@@ -852,8 +870,10 @@ class StreamlitChatApp:
         route: str | None,
         route_reason: str | None,
         planned_slots: dict[str, object] | None,
+        multi_step_plan: dict[str, object] | None,
         last_result_schema: list[str] | None,
         sql: str | None,
+        fewshot_examples: str | None,
         message_index: int,
     ) -> None:
         """
@@ -863,8 +883,10 @@ class StreamlitChatApp:
             route: 라우팅 결과.
             route_reason: 라우팅 근거.
             planned_slots: 플래너 슬롯.
+            multi_step_plan: 멀티 스텝 계획.
             last_result_schema: 직전 결과 스키마.
             sql: 생성/실행 SQL.
+            fewshot_examples: few-shot 예시 문자열.
             message_index: 메시지 인덱스(고유 키용).
 
         Side Effects:
@@ -879,8 +901,14 @@ class StreamlitChatApp:
             steps = [
                 ("Routing", bool(route)),
                 ("Planning", bool(planned_slots)),
-                ("SQL", bool(sql)),
             ]
+            if multi_step_plan:
+                steps.append(("Multi-step", True))
+            if fewshot_examples:
+                steps.append(("Few-shot", True))
+            else:
+                steps.append(("Few-shot", False))
+            steps.append(("SQL", bool(sql)))
             for label, done in steps:
                 icon = "✅" if done else "⏳"
                 st.markdown(f"- {icon} {label}")
@@ -893,8 +921,12 @@ class StreamlitChatApp:
                 payload["route"] = route
             if planned_slots:
                 payload["planned_slots"] = planned_slots
+            if multi_step_plan:
+                payload["multi_step_plan"] = multi_step_plan
             if last_result_schema:
                 payload["last_result_schema"] = last_result_schema
+            if fewshot_examples:
+                payload["fewshot_examples"] = fewshot_examples
             if sql:
                 payload["sql"] = sql
 

@@ -9,6 +9,7 @@ import pandas as pd
 from langgraph.graph import END, StateGraph
 
 from src.agent.contextualizer import build_context_hint
+from src.agent.fewshot_generator import FewshotGenerationInput, FewshotGenerator
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
 from src.agent.planner import Planner, PlannerOutput, PlannerSlots
@@ -37,6 +38,7 @@ class AgentState(TypedDict, total=False):
     planned_slots: dict[str, Any]
     clarify_question: str | None
     multi_step_plan: MultiStepPlan | None
+    fewshot_examples: str | None
     sql: str | None
     result_df: pd.DataFrame | None
     last_result_schema: list[str] | None
@@ -70,6 +72,8 @@ class AgentDependencies:
         router: 라우터.
         responder: 응답 생성기.
         planner: 플래너.
+        fewshot_generator: Few-shot 생성기.
+        fewshot_candidate_limit: few-shot 후보 sql_template 최대 개수.
         sql_generator: SQL 생성기.
         guard: SQL 가드.
         validator: 결과 검증기.
@@ -83,6 +87,8 @@ class AgentDependencies:
     router: RouterLLM
     responder: Responder
     planner: Planner
+    fewshot_generator: FewshotGenerator
+    fewshot_candidate_limit: int
     sql_generator: SQLGenerator
     guard: SQLGuard
     validator: ResultValidator
@@ -111,6 +117,7 @@ def build_agent_chain(deps: AgentDependencies):
     graph.add_node("plan", lambda state: _plan_node(state, deps))
     graph.add_node("clarify", lambda state: _clarify_node(state, deps))
     graph.add_node("multi_step", lambda state: _multi_step_node(state, deps))
+    graph.add_node("fewshot", lambda state: _fewshot_node(state, deps))
     graph.add_node("generate_sql", lambda state: _generate_sql_node(state, deps))
     graph.add_node("guard", lambda state: _guard_node(state, deps))
     graph.add_node("execute", lambda state: _execute_node(state, deps))
@@ -136,11 +143,19 @@ def build_agent_chain(deps: AgentDependencies):
         _plan_selector,
         {
             "clarify": "clarify",
-            "multi_step": "multi_step",
-            "continue": "generate_sql",
+            "continue": "fewshot",
+            "multi_step": "fewshot",
         },
     )
 
+    graph.add_conditional_edges(
+        "fewshot",
+        _fewshot_selector,
+        {
+            "multi_step": "multi_step",
+            "generate_sql": "generate_sql",
+        },
+    )
     graph.add_edge("generate_sql", "guard")
     graph.add_conditional_edges(
         "guard",
@@ -354,6 +369,47 @@ def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         }
 
 
+def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+    """
+    Few-shot 생성 노드.
+
+    Args:
+        state: 현재 상태.
+        deps: 의존성.
+
+    Returns:
+        업데이트된 상태.
+    """
+
+    planned_slots = state.get("planned_slots", {})
+    user_message = state["user_message"]
+    multi_step_plan = state.get("multi_step_plan")
+    target_count = _decide_fewshot_count(user_message, multi_step_plan)
+    candidate_metrics = _collect_candidate_metrics(
+        user_message,
+        planned_slots,
+        multi_step_plan,
+        deps.registry,
+        limit=deps.fewshot_candidate_limit,
+    )
+
+    try:
+        fewshot_examples = deps.fewshot_generator.generate_examples(
+            FewshotGenerationInput(
+                user_question=user_message,
+                planned_slots=planned_slots,
+                candidate_metrics=candidate_metrics,
+                schema_context=deps.schema_store.build_context(),
+                context_hint=build_context_hint(deps.memory),
+                target_count=target_count,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+
+    return {"fewshot_examples": fewshot_examples}
+
+
 def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     SQL 생성 노드.
@@ -389,6 +445,7 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
                 schema_context=deps.schema_store.build_context(),
                 last_sql=deps.memory.last_sql,
                 context_hint=build_context_hint(deps.memory),
+                fewshot_examples=state.get("fewshot_examples"),
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -747,6 +804,22 @@ def _plan_selector(state: AgentState) -> str:
     if state.get("multi_step_plan"):
         return "multi_step"
     return "continue"
+
+
+def _fewshot_selector(state: AgentState) -> str:
+    """
+    few-shot 이후 분기를 결정한다.
+
+    Args:
+        state: 현재 상태.
+
+    Returns:
+        다음 노드 키.
+    """
+
+    if state.get("multi_step_plan"):
+        return "multi_step"
+    return "generate_sql"
 
 
 def _error_selector(state: AgentState) -> str:
@@ -1126,6 +1199,90 @@ def _build_multi_step_plan(user_message: str, planned_slots: dict[str, Any]) -> 
         "season_id": season_id,
         "top_k": top_k,
     }
+
+
+def _decide_fewshot_count(user_message: str, multi_step_plan: MultiStepPlan | None) -> int:
+    """
+    few-shot 예시 개수를 결정한다.
+
+    Args:
+        user_message: 사용자 질문.
+        multi_step_plan: 멀티 스텝 계획.
+
+    Returns:
+        예시 개수(3 또는 5).
+    """
+
+    if multi_step_plan:
+        return 5
+
+    lowered = user_message.lower()
+    keywords = ["그리고", "및", "비교", "추세", "상관", "분석", "vs", "대결", "맞대결"]
+    if any(keyword in user_message or keyword in lowered for keyword in keywords):
+        return 5
+    return 3
+
+
+def _collect_candidate_metrics(
+    user_message: str,
+    planned_slots: dict[str, Any],
+    multi_step_plan: MultiStepPlan | None,
+    registry: MetricsRegistry,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """
+    few-shot 후보 메트릭 컨텍스트를 수집한다.
+
+    Args:
+        user_message: 사용자 질문.
+        planned_slots: 플래너 슬롯.
+        multi_step_plan: 멀티 스텝 계획.
+        registry: 메트릭 레지스트리.
+
+    Returns:
+        메트릭 컨텍스트 리스트.
+    """
+
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_metric(metric_name: str | None) -> None:
+        if not metric_name or metric_name in seen:
+            return
+        metric = registry.get(metric_name)
+        if metric is None:
+            return
+        collected.append(registry.build_sql_context(metric))
+        seen.add(metric.name)
+
+    add_metric(planned_slots.get("metric"))
+
+    if multi_step_plan:
+        for metric_name in _metrics_for_multi_step(multi_step_plan):
+            add_metric(metric_name)
+
+    for metric in registry.search(user_message, limit=5):
+        add_metric(metric.name)
+
+    return collected[: max(limit, 0)]
+
+
+def _metrics_for_multi_step(plan: MultiStepPlan) -> list[str]:
+    """
+    멀티 스텝 계획에서 관련 메트릭을 반환한다.
+
+    Args:
+        plan: 멀티 스텝 계획.
+
+    Returns:
+        메트릭 이름 리스트.
+    """
+
+    kind = plan.get("kind")
+    if kind == "attendance_top_teams_with_rank":
+        return ["attendance_top_teams", "win_pct"]
+    return []
 
 
 def _is_attendance_rank_query(user_message: str, planned_slots: dict[str, Any]) -> bool:

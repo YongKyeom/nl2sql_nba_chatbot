@@ -26,6 +26,7 @@ from src.agent.validator import ResultValidator
 from src.db.schema_store import SchemaStore
 from src.db.sqlite_client import SQLiteClient
 from src.metrics.registry import MetricsRegistry
+from src.prompt.sql_generation import SQL_FEWSHOT_EXAMPLES
 
 
 class _Tee:
@@ -146,6 +147,25 @@ class DummySQLGenerator:
         """
 
         return self._sql
+
+
+class DummyFewshotGenerator:
+    """
+    테스트용 Few-shot 생성기.
+    """
+
+    def generate_examples(self, payload: Any) -> str:
+        """
+        기본 few-shot 예시를 반환한다.
+
+        Args:
+            payload: few-shot 입력.
+
+        Returns:
+            few-shot 예시 문자열.
+        """
+
+        return SQL_FEWSHOT_EXAMPLES
 
 
 class DummySummarizer:
@@ -367,6 +387,8 @@ def _build_dependencies(
         router=router,
         responder=DummyResponder("요약 테스트"),
         planner=Planner(registry),
+        fewshot_generator=DummyFewshotGenerator(),
+        fewshot_candidate_limit=5,
         sql_generator=DummySQLGenerator(sql),
         guard=SQLGuard(schema_path),
         validator=ResultValidator(),

@@ -24,6 +24,7 @@ class SQLGenerationInput:
         schema_context: 스키마 요약 문자열.
         last_sql: 직전 SQL.
         context_hint: 대화 맥락 요약.
+        fewshot_examples: SQL 생성 예시 문자열.
     """
 
     user_question: str
@@ -32,6 +33,7 @@ class SQLGenerationInput:
     schema_context: str
     last_sql: str | None = None
     context_hint: str | None = None
+    fewshot_examples: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ class SQLGenerator:
             생성된 SQL 문자열.
         """
 
+        fewshot_examples = payload.fewshot_examples or SQL_FEWSHOT_EXAMPLES
         prompt = SQL_GENERATION_PROMPT.format(
             user_question=payload.user_question,
             planned_slots=json.dumps(payload.planned_slots, ensure_ascii=False),
@@ -93,7 +96,7 @@ class SQLGenerator:
             schema_context=payload.schema_context,
             last_sql=payload.last_sql or "없음",
             context_hint=payload.context_hint or "없음",
-            fewshot_examples=SQL_FEWSHOT_EXAMPLES,
+            fewshot_examples=fewshot_examples,
         )
         response = self._client.chat.completions.create(
             model=self._model,

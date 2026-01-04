@@ -165,10 +165,11 @@ python -m unittest -q src.test.test_chain_unit
 
 ## Fewshot 추가 방법
 
-1. `src/prompt/sql_generation.py`의 `SQL_FEWSHOT_EXAMPLES`에 예시를 추가합니다.
-2. 형식은 `질문:` / `SQL:` 라인을 유지하고, SQL은 반드시 `LIMIT`을 포함합니다.
-3. 예시에 쓰는 테이블/컬럼은 `result/schema.json`에 존재해야 합니다.
-4. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`도 함께 보강합니다.
+1. 기본 예시는 `src/prompt/sql_generation.py`의 `SQL_FEWSHOT_EXAMPLES`에서 관리합니다.
+2. 런타임에는 `FewshotGenerator`가 사용자 질문과 후보 메트릭을 기반으로 few-shot을 동적으로 생성합니다.
+3. `FEWSHOT_CANDIDATE_LIMIT` 환경 변수로 후보 sql_template 개수를 조절할 수 있습니다(기본값 5).
+4. 예시에 쓰는 테이블/컬럼은 `result/schema.json`에 존재해야 합니다.
+5. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`도 함께 보강합니다.
 
 예시 추가 패턴:
 ```
@@ -196,7 +197,8 @@ flowchart TD
   C --> P
 
   P -->|멀티 스텝| MS["Multi-step SQL Runner"]
-  P -->|단일 SQL| SG["SQL Generator"]
+  P -->|단일 SQL| FS["Fewshot Generator"]
+  FS --> SG["SQL Generator"]
 
   O --> TS["Title Generator"]
   O --> CS["Chat Store"]

@@ -22,6 +22,7 @@ class AppConfig:
         log_path: 로그 파일 경로.
         memory_db_path: 장기 메모리 DB 경로.
         chat_db_path: 채팅 로그 DB 경로.
+        fewshot_candidate_limit: few-shot 후보 sql_template 최대 개수.
     """
 
     db_path: Path
@@ -32,6 +33,7 @@ class AppConfig:
     log_path: Path
     memory_db_path: Path
     chat_db_path: Path
+    fewshot_candidate_limit: int
 
 
 def load_config() -> AppConfig:
@@ -49,6 +51,7 @@ def load_config() -> AppConfig:
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     memory_db_path = Path(os.getenv("MEMORY_DB_PATH", "result/memory.sqlite"))
     chat_db_path = Path(os.getenv("CHAT_DB_PATH", "result/chat.sqlite"))
+    fewshot_candidate_limit = int(os.getenv("FEWSHOT_CANDIDATE_LIMIT", "5"))
 
     return AppConfig(
         db_path=db_path,
@@ -59,4 +62,5 @@ def load_config() -> AppConfig:
         log_path=Path("log") / f"log_{datetime.now().strftime('%Y%m%d')}.json",
         memory_db_path=memory_db_path,
         chat_db_path=chat_db_path,
+        fewshot_candidate_limit=fewshot_candidate_limit,
     )
