@@ -21,6 +21,7 @@ class AppConfig:
         schema_md_path: 스키마 Markdown 경로.
         log_path: 로그 파일 경로.
         memory_db_path: 장기 메모리 DB 경로.
+        chat_db_path: 채팅 로그 DB 경로.
     """
 
     db_path: Path
@@ -30,6 +31,7 @@ class AppConfig:
     schema_md_path: Path
     log_path: Path
     memory_db_path: Path
+    chat_db_path: Path
 
 
 def load_config() -> AppConfig:
@@ -46,6 +48,7 @@ def load_config() -> AppConfig:
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     memory_db_path = Path(os.getenv("MEMORY_DB_PATH", "result/memory.sqlite"))
+    chat_db_path = Path(os.getenv("CHAT_DB_PATH", "result/chat.sqlite"))
 
     return AppConfig(
         db_path=db_path,
@@ -55,4 +58,5 @@ def load_config() -> AppConfig:
         schema_md_path=Path("result/schema.md"),
         log_path=Path("log") / f"log_{datetime.now().strftime('%Y%m%d')}.json",
         memory_db_path=memory_db_path,
+        chat_db_path=chat_db_path,
     )

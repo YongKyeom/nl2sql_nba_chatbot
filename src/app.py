@@ -1,10 +1,12 @@
 # ruff: noqa: E402, I001
 from __future__ import annotations
 
+import base64
 import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent.scene import build_scene, ChatbotScene
+from src.agent.title_generator import TitleGenerator
 from src.config import AppConfig, load_config
+from src.db.chat_store import ChatSession, ChatStore
 from src.utils.logging import JsonlLogger
 from src.utils.markdown import records_to_markdown
 from src.utils.time import Timer
@@ -42,7 +46,6 @@ COLUMN_LABELS = {
 }
 
 
-
 def main() -> None:
     """
     Streamlit 엔트리 포인트.
@@ -56,7 +59,14 @@ def main() -> None:
     _init_session_state(config)
     _apply_custom_theme()
 
-    # 2) 사이드바 설정
+    # 2) 사용자/채팅 세션 준비
+    user_id = _get_user_id()
+    chat_store = _ensure_chat_store(config)
+    active_chat_id = _ensure_active_chat(chat_store, user_id)
+    selected_chat_id = _render_chat_sidebar(chat_store, user_id, active_chat_id)
+
+    # 3) Scene/오케스트레이터 구성(세션 내 동일 인스턴스 재사용)
+    st.sidebar.divider()
     st.sidebar.header("설정")
     st.sidebar.caption(f"DB: {config.db_path}")
 
@@ -64,10 +74,16 @@ def main() -> None:
     model = st.sidebar.selectbox("모델", ["gpt-4o-mini"], index=0)
     temperature = st.sidebar.slider("Temperature", min_value=0.1, max_value=2.0, value=1.0, step=0.1)
 
-    # 3) Scene/오케스트레이터 구성(세션 내 동일 인스턴스 재사용)
     scene = _ensure_scene(config, model=model, temperature=temperature)
     orchestrator = scene.orchestrator
     logger = JsonlLogger(config.log_path)
+    title_generator = _ensure_title_generator(model)
+
+    if selected_chat_id != st.session_state.loaded_chat_id:
+        st.session_state.active_chat_id = selected_chat_id
+        st.session_state.messages = _load_chat_messages(chat_store, user_id, selected_chat_id)
+        _restore_memory_from_messages(scene, st.session_state.messages)
+        st.session_state.loaded_chat_id = selected_chat_id
 
     st.sidebar.divider()
     st.sidebar.markdown("### 데이터")
@@ -103,6 +119,8 @@ def main() -> None:
         user_text = quick_prompt
 
     if user_text:
+        chat_store.add_message(user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text)
+        _maybe_set_chat_title(chat_store, title_generator, user_id, st.session_state.active_chat_id, user_text)
         st.session_state.messages.append({"role": "user", "content": user_text})
         with st.chat_message("user"):
             st.write(user_text)
@@ -110,7 +128,19 @@ def main() -> None:
         with st.chat_message("assistant"):
             with Timer() as timer:
                 result = _run_agent_with_thinking(scene, user_text)
-            _handle_agent_result(result, timer.elapsed_ms, logger, user_text, show_thinking=False)
+            _handle_agent_result(
+                result,
+                timer.elapsed_ms,
+                logger,
+                user_text,
+                chat_store=chat_store,
+                user_id=user_id,
+                chat_id=st.session_state.active_chat_id,
+                show_thinking=False,
+            )
+        if st.session_state.title_refresh_needed:
+            st.session_state.title_refresh_needed = False
+            st.rerun()
 
 
 def _init_session_state(config: AppConfig) -> None:
@@ -132,6 +162,18 @@ def _init_session_state(config: AppConfig) -> None:
         st.session_state.messages = []
     if "show_dataset_info" not in st.session_state:
         st.session_state.show_dataset_info = False
+    if "chat_store" not in st.session_state:
+        st.session_state.chat_store = None
+    if "title_generator" not in st.session_state:
+        st.session_state.title_generator = None
+    if "chat_sessions" not in st.session_state:
+        st.session_state.chat_sessions = []
+    if "active_chat_id" not in st.session_state:
+        st.session_state.active_chat_id = None
+    if "loaded_chat_id" not in st.session_state:
+        st.session_state.loaded_chat_id = None
+    if "title_refresh_needed" not in st.session_state:
+        st.session_state.title_refresh_needed = False
 
 
 def _ensure_scene(config: AppConfig, *, model: str, temperature: float) -> ChatbotScene:
@@ -153,6 +195,266 @@ def _ensure_scene(config: AppConfig, *, model: str, temperature: float) -> Chatb
 
     st.session_state.scene = build_scene(config, model=model, temperature=temperature, memory=scene.memory)
     return st.session_state.scene
+
+
+def _ensure_chat_store(config: AppConfig) -> ChatStore:
+    """
+    ChatStore를 세션에 준비한다.
+
+    Args:
+        config: 앱 설정.
+
+    Returns:
+        ChatStore.
+    """
+
+    if st.session_state.chat_store is None:
+        st.session_state.chat_store = ChatStore(config.chat_db_path)
+    return st.session_state.chat_store
+
+
+def _ensure_title_generator(model: str) -> TitleGenerator:
+    """
+    제목 생성기를 세션에 준비한다.
+
+    Args:
+        model: 사용할 모델명.
+
+    Returns:
+        TitleGenerator.
+    """
+
+    generator = st.session_state.title_generator
+    if generator is None or generator.model != model:
+        st.session_state.title_generator = TitleGenerator(model=model, temperature=0.2)
+    return st.session_state.title_generator
+
+
+def _ensure_active_chat(chat_store: ChatStore, user_id: str) -> str:
+    """
+    활성 채팅을 확보한다.
+
+    Args:
+        chat_store: 채팅 저장소.
+        user_id: 사용자 ID.
+
+    Returns:
+        활성 chat_id.
+    """
+
+    sessions = chat_store.list_sessions(user_id)
+    if not sessions:
+        chat_id = chat_store.create_session(user_id, title="새 대화")
+        sessions = chat_store.list_sessions(user_id)
+        st.session_state.chat_sessions = sessions
+        st.session_state.active_chat_id = chat_id
+        return chat_id
+
+    st.session_state.chat_sessions = sessions
+    valid_ids = [session.chat_id for session in sessions]
+    active_chat_id = st.session_state.active_chat_id
+    if active_chat_id not in valid_ids:
+        active_chat_id = valid_ids[0]
+        st.session_state.active_chat_id = active_chat_id
+    return active_chat_id
+
+
+def _render_chat_sidebar(chat_store: ChatStore, user_id: str, active_chat_id: str) -> str:
+    """
+    사이드바 채팅 목록을 렌더링한다.
+
+    Args:
+        chat_store: 채팅 저장소.
+        user_id: 사용자 ID.
+        active_chat_id: 현재 활성 채팅 ID.
+
+    Returns:
+        선택된 chat_id.
+    """
+
+    st.sidebar.header("채팅")
+    if st.sidebar.button("새 채팅"):
+        new_chat_id = chat_store.create_session(user_id, title="새 대화")
+        st.session_state.active_chat_id = new_chat_id
+        st.session_state.loaded_chat_id = None
+        st.session_state.messages = []
+        st.session_state.chat_sessions = chat_store.list_sessions(user_id)
+        return new_chat_id
+
+    sessions = chat_store.list_sessions(user_id)
+    st.session_state.chat_sessions = sessions
+    if not sessions:
+        return active_chat_id
+
+    options = [session.chat_id for session in sessions]
+    if active_chat_id not in options:
+        active_chat_id = options[0]
+
+    selected = active_chat_id
+    for session in sessions:
+        cols = st.sidebar.columns([9, 1])
+        prefix = "●" if session.chat_id == active_chat_id else "○"
+        label = f"{prefix} {session.title}"
+        if cols[0].button(label, key=f"chat_select_{session.chat_id}", use_container_width=True):
+            selected = session.chat_id
+        _render_chat_actions(cols[1], chat_store, user_id, session)
+
+    st.session_state.active_chat_id = selected
+    return selected
+
+
+def _load_chat_messages(chat_store: ChatStore, user_id: str, chat_id: str) -> list[dict[str, object]]:
+    """
+    저장된 메시지를 불러와 렌더링용 형태로 변환한다.
+
+    Args:
+        chat_store: 채팅 저장소.
+        user_id: 사용자 ID.
+        chat_id: 채팅 ID.
+
+    Returns:
+        메시지 리스트.
+    """
+
+    messages = chat_store.list_messages(user_id, chat_id)
+    hydrated: list[dict[str, object]] = []
+    for message in messages:
+        dataframe_records = message.pop("dataframe_records", None)
+        dataframe_columns = message.pop("dataframe_columns", None)
+        if dataframe_records is not None:
+            dataframe = pd.DataFrame.from_records(dataframe_records)
+            if isinstance(dataframe_columns, list):
+                dataframe = dataframe.reindex(columns=dataframe_columns)
+            message["dataframe"] = dataframe
+        hydrated.append(message)
+    return hydrated
+
+
+def _render_chat_actions(column: Any, chat_store: ChatStore, user_id: str, session: ChatSession) -> None:
+    """
+    채팅 항목의 액션 메뉴를 렌더링한다.
+
+    Args:
+        column: 렌더링할 컬럼.
+        chat_store: 채팅 저장소.
+        user_id: 사용자 ID.
+        session: ChatSession 객체.
+
+    Returns:
+        None
+    """
+
+    chat_id = session.chat_id
+    title_value = session.title
+
+    with column:
+        menu_factory = getattr(st, "popover", None)
+        if menu_factory:
+            menu = menu_factory("⋮", use_container_width=True)
+        else:
+            menu = st.expander("⋮", expanded=False)
+
+    with menu:
+        new_title = st.text_input(
+            "채팅 제목",
+            value=title_value,
+            key=f"title_input_{chat_id}",
+        )
+        if st.button("이름 바꾸기", key=f"update_title_{chat_id}"):
+            if new_title.strip():
+                chat_store.update_title(user_id, chat_id, new_title.strip())
+                st.session_state.chat_sessions = chat_store.list_sessions(user_id)
+                st.rerun()
+
+        confirm = st.checkbox("삭제 확인", key=f"confirm_delete_{chat_id}")
+        if st.button("삭제", key=f"delete_chat_{chat_id}"):
+            if confirm:
+                chat_store.delete_session(user_id, chat_id)
+                st.session_state.active_chat_id = None
+                st.session_state.loaded_chat_id = None
+                st.session_state.messages = []
+                st.session_state.chat_sessions = chat_store.list_sessions(user_id)
+                st.rerun()
+
+
+def _restore_memory_from_messages(scene: ChatbotScene, messages: list[dict[str, object]]) -> None:
+    """
+    저장된 메시지로 대화 메모리를 복원한다.
+
+    Args:
+        scene: ChatbotScene.
+        messages: 메시지 리스트.
+
+    Returns:
+        None
+    """
+
+    memory = scene.memory
+    memory.short_term.reset()
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content", "")
+        if role == "user":
+            memory.short_term.start_turn(str(content))
+            continue
+
+        if role != "assistant":
+            continue
+
+        memory.short_term.finish_turn(
+            assistant_message=str(content),
+            route=message.get("route"),
+            sql=message.get("sql"),
+            planned_slots=message.get("planned_slots"),
+        )
+
+        dataframe = message.get("dataframe")
+        sql = message.get("sql")
+        planned_slots = message.get("planned_slots") or {}
+        if isinstance(dataframe, pd.DataFrame) and isinstance(sql, str):
+            memory.short_term.update_sql_result(sql, dataframe, planned_slots)
+        elif isinstance(dataframe, pd.DataFrame):
+            memory.short_term.last_result = dataframe
+            memory.short_term.last_result_schema = list(dataframe.columns)
+            memory.short_term.last_slots = planned_slots
+
+
+def _maybe_set_chat_title(
+    chat_store: ChatStore,
+    title_generator: TitleGenerator,
+    user_id: str,
+    chat_id: str,
+    user_message: str,
+) -> None:
+    """
+    첫 질문 기반으로 채팅 제목을 설정한다.
+
+    Args:
+        chat_store: 채팅 저장소.
+        title_generator: 제목 생성기.
+        user_id: 사용자 ID.
+        chat_id: 채팅 ID.
+        user_message: 첫 질문.
+
+    Returns:
+        None
+    """
+
+    session = chat_store.get_session(user_id, chat_id)
+    if session is None or session.title.strip() not in {"", "새 대화"}:
+        return
+
+    try:
+        title = title_generator.generate(user_message)
+    except Exception:
+        return
+
+    if not title:
+        return
+    chat_store.update_title(user_id, chat_id, title)
+    st.session_state.chat_sessions = chat_store.list_sessions(user_id)
+    st.session_state.title_refresh_needed = True
 
 
 def _render_dataset_info(scene: ChatbotScene) -> None:
@@ -193,15 +495,39 @@ def _render_hero() -> None:
         None
     """
 
+    logo_uri = _build_logo_data_uri(Path("data/nba_image.png"))
+    logo_html = f'<img src="{logo_uri}" class="hero-logo" />' if logo_uri else ""
     st.markdown(
-        """
-<div class="hero">
-  <div class="hero-title">NBA NL2SQL 챗봇</div>
-  <div class="hero-subtitle">NBA 데이터 질의를 자연어로 입력하면 SQL 실행 결과와 요약을 제공합니다.</div>
+        f"""
+<div class="hero-wrap">
+  {logo_html}
+  <div class="hero">
+    <div class="hero-title">NL2SQL 기반 NBA 챗봇</div>
+    <div class="hero-subtitle">자연어 질의를 하면 AI 에이전트가 NBA 데이터 테이블로부터 데이터를 종합한 후 분석해 핵심을 알려드립니다.</div>
+  </div>
 </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _build_logo_data_uri(path: Path) -> str | None:
+    """
+    로고 이미지의 data URI를 만든다.
+
+    Args:
+        path: 이미지 경로.
+
+    Returns:
+        data URI 문자열(없으면 None).
+    """
+
+    if not path.exists():
+        return None
+
+    data = path.read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _render_quick_prompts() -> str | None:
@@ -293,6 +619,10 @@ def _handle_agent_result(
     latency_ms: float | None,
     logger: JsonlLogger,
     user_text: str,
+    *,
+    chat_store: ChatStore,
+    user_id: str,
+    chat_id: str,
     show_thinking: bool = True,
 ) -> None:
     """
@@ -338,6 +668,27 @@ def _handle_agent_result(
     st.session_state.messages.append(assistant_message)
     message_index = len(st.session_state.messages) - 1
 
+    chat_meta: dict[str, object] = {
+        "sql": sql,
+        "planned_slots": planned_slots,
+        "route": route,
+        "route_reason": route_reason,
+        "error": error,
+        "error_detail": error_detail,
+        "last_result_schema": result.get("last_result_schema"),
+    }
+    if isinstance(display_df, pd.DataFrame):
+        chat_meta["dataframe_records"] = display_df.to_dict(orient="records")
+        chat_meta["dataframe_columns"] = list(display_df.columns)
+
+    chat_store.add_message(
+        user_id=user_id,
+        chat_id=chat_id,
+        role="assistant",
+        content=final_answer,
+        meta=chat_meta,
+    )
+
     if show_thinking:
         _render_thinking_panel(
             route=route,
@@ -376,7 +727,7 @@ def _handle_agent_result(
         rows=int(len(dataframe)) if isinstance(dataframe, pd.DataFrame) else None,
         latency_ms=latency_ms,
         error=error if isinstance(error, str) else None,
-        user_id=_get_user_id(),
+        user_id=user_id,
     )
 
 
@@ -589,7 +940,7 @@ def _find_markdown_table_range(lines: list[str]) -> tuple[int, int] | None:
             while end < len(lines) and "|" in lines[end]:
                 end += 1
             return idx, end
-    return None
+    return "developer"
 
 
 def _has_markdown_table(text: str) -> bool:
@@ -647,7 +998,8 @@ def _get_user_id() -> str | None:
                 return str(value[0]) if value else None
             return str(value)
 
-    return None
+    st.session_state.user_id = "developer"
+    return "developer"
 
 
 def _stream_text(text: str, chunk_size: int = 24) -> Iterator[str]:
@@ -692,7 +1044,24 @@ html, body, [class*="css"] {
 }
 
 .hero {
-  padding: 0.5rem 0 0.2rem;
+  padding: 0.1rem 0 0.2rem;
+}
+
+.hero-wrap {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 0.6rem 0 0.2rem;
+}
+
+.hero-logo {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
 }
 
 .hero-title {
