@@ -144,22 +144,15 @@ class AgentOrchestrator:
         self.memory.start_turn(user_message)
 
         # 2) 체인 실행: 내부에서 SQL/결과/슬롯 같은 구조화 데이터가 메모리에 업데이트된다.
-        try:
-            result: dict[str, object] = self._chain.invoke({"user_message": user_message})
-        except Exception as exc:  # noqa: BLE001
-            failure = {
-                "route": "error",
-                "error": f"오케스트레이터 실행 실패: {exc}",
-                "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
-                "final_answer": "요청을 처리하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
-            }
+        result = self._invoke_chain(user_message)
+        if result.get("route") == "error":
             self.memory.finish_turn(
-                assistant_message=str(failure.get("final_answer")),
-                route=str(failure.get("route")),
+                assistant_message=str(result.get("final_answer")),
+                route=str(result.get("route")),
                 sql=None,
                 planned_slots=None,
             )
-            return failure
+            return result
 
         # 3) 턴 마무리: 최종 응답과 함께 장기 메모리 학습(선호/기본값)을 갱신한다.
         final_answer = result.get("final_answer")
@@ -185,30 +178,104 @@ class AgentOrchestrator:
 
         if not hasattr(self._chain, "stream"):
             # 스트리밍을 지원하지 않는 경우 폴백
-            yield self.invoke(user_message)
+            yield {"event_type": "final", "node": None, "state": self.invoke(user_message)}
             return
 
         # 스트리밍에서는 메모리 턴 마킹만 하고, finish_turn은 최종 상태에서 처리한다.
         self.memory.start_turn(user_message)
+        merged_state: dict[str, object] = {"user_message": user_message}
         last_state: dict[str, object] | None = None
+
+        stream_mode = "debug"
         try:
-            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode="values")
+            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode=stream_mode)
         except TypeError:
-            stream_iter = self._chain.stream({"user_message": user_message})
+            stream_mode = "updates"
+            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode=stream_mode)
+        except Exception:
+            fallback = self._invoke_chain(user_message)
+            self._finish_stream_turn(fallback)
+            yield {"event_type": "final", "node": None, "state": fallback}
+            return
 
-        for state in stream_iter:
-            last_state = state
-            yield state
+        if stream_mode == "debug":
+            for event in stream_iter:
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get("type")
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                node_name = payload.get("name")
 
-        if last_state is not None:
-            final_answer = last_state.get("final_answer")
-            planned_slots = last_state.get("planned_slots")
-            self.memory.finish_turn(
-                assistant_message=str(final_answer) if isinstance(final_answer, str) else None,
-                route=str(last_state.get("route")) if last_state.get("route") else None,
-                sql=str(last_state.get("sql")) if isinstance(last_state.get("sql"), str) else None,
-                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
-            )
+                if event_type == "task_result":
+                    result = payload.get("result")
+                    if isinstance(result, dict):
+                        merged_state.update(result)
+                        last_state = dict(merged_state)
+
+                if event_type in {"task", "task_result"}:
+                    yield {
+                        "event_type": event_type,
+                        "node": node_name,
+                        "state": dict(merged_state),
+                    }
+        else:
+            for state in stream_iter:
+                if not isinstance(state, dict):
+                    continue
+                merged_state.update(state)
+                last_state = dict(merged_state)
+                yield {"event_type": "state", "node": None, "state": dict(merged_state)}
+
+        if last_state is None:
+            fallback = self._invoke_chain(user_message)
+            self._finish_stream_turn(fallback)
+            yield {"event_type": "final", "node": None, "state": fallback}
+            return
+
+        self._finish_stream_turn(last_state)
+        yield {"event_type": "final", "node": None, "state": last_state}
+
+    def _invoke_chain(self, user_message: str) -> dict[str, object]:
+        """
+        체인을 실행하고 결과를 반환한다.
+
+        Args:
+            user_message: 사용자 질문.
+
+        Returns:
+            실행 결과 딕셔너리.
+        """
+
+        try:
+            return self._chain.invoke({"user_message": user_message})
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "route": "error",
+                "error": f"오케스트레이터 실행 실패: {exc}",
+                "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
+                "final_answer": "요청을 처리하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            }
+
+    def _finish_stream_turn(self, state: dict[str, object]) -> None:
+        """
+        스트리밍 종료 시 메모리 턴을 마무리한다.
+
+        Args:
+            state: 최종 상태.
+
+        Returns:
+            None
+        """
+
+        final_answer = state.get("final_answer")
+        planned_slots = state.get("planned_slots")
+        self.memory.finish_turn(
+            assistant_message=str(final_answer) if isinstance(final_answer, str) else None,
+            route=str(state.get("route")) if state.get("route") else None,
+            sql=str(state.get("sql")) if isinstance(state.get("sql"), str) else None,
+            planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+        )
+
     def reset_memory(self) -> None:
         """
         대화 메모리를 초기화한다.

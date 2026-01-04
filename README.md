@@ -1,20 +1,18 @@
 # NBA NL2SQL 챗봇 (SQLite + Streamlit)
 
-NBA SQLite DB를 기반으로 NL2SQL 에이전트를 제공하는 프로젝트입니다. 지표 정의는 `src/metrics/metrics.yaml`에 한글로 상세히 주입되며, 변경 시 코드 수정 없이 반영되도록 설계했습니다.
+NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를 표/요약/차트로 제공하는 프로젝트입니다. 지표 정의는 `src/metrics/metrics.yaml`에 한글로 주입되어 코드 수정 없이 확장할 수 있습니다.
 
 ## 주요 기능
 
-- Scene/Orchestrator 기반으로 Streamlit과 로컬 러너가 동일한 경로로 실행됩니다.
-- LLM 라우터 + 플래너 + SQL 생성/가드 + 요약까지 end-to-end 파이프라인을 제공합니다.
-- 단기/장기 메모리를 분리해 멀티턴 문맥과 선호(기본 시즌 등)를 관리합니다.
-- SQL Guard로 SELECT-only를 강제하고, 품질 검증/재시도를 통해 안정성을 높입니다.
-- 이전 결과 재사용(정렬/필터/Top-K)과 일반 안내 답변도 지원합니다.
-- 멀티 스텝 플래닝으로 복합 질의를 단계별 SQL로 처리합니다(예: 관중 상위 팀 + 시즌 성적 결합).
-- Thinking 패널로 단계별 상태를 확인하며, 최종 답변은 UI 스트리밍(청크 출력)으로 제공합니다.
-- 결과 표는 앱에서 생성한 마크다운 테이블로 통일되어 CSV 다운로드와 동일한 데이터가 보이도록 합니다.
-- 채팅 목록/제목 생성/수정/삭제를 지원하며, 첫 질문을 기반으로 채팅 제목을 한 번 자동 생성합니다.
-- 그래프/차트/시각화 요청 시 📊 차트 섹션에 자동 시각화를 추가합니다(차트는 Matplotlib로 렌더링).
-- 지원 차트 유형: line, area, bar, stacked_bar, scatter, histogram, box
+- **Scene/Orchestrator 구조**로 Streamlit/로컬 러너가 동일한 경로로 실행됩니다.
+- **LLM 라우터 + 플래너 + SQL 생성/가드 + 요약**까지 end-to-end 파이프라인 제공.
+- **단기/장기 메모리 분리**로 멀티턴 문맥과 사용자 선호(기본 시즌 등) 유지.
+- **SQL Guard + 결과 검증 재시도**로 안정성 강화.
+- **이전 결과 재사용(정렬/필터/Top-K)** 및 일반 안내 응답 지원.
+- **멀티스텝 플래닝**으로 복합 질의를 단계별 SQL로 처리.
+- **Thinking 패널 실시간 업데이트**: 실행 중인 Agent만 ⏳, 완료 시 ✅ 표시.
+- **최종 답변 스트리밍**으로 자연스러운 출력 경험 제공.
+- **차트 자동 생성**: 그래프/차트 요청 시 📊 차트 섹션에 렌더링.
 
 ## 데이터 출처
 
@@ -41,14 +39,14 @@ NBA SQLite DB를 기반으로 NL2SQL 에이전트를 제공하는 프로젝트�
 
 ### 제한 사항
 
-- 선수 경기 로그(월별/경기별 득점·출전시간·슛 성공률) 테이블이 없어 해당 질의는 정확히 지원하지 않습니다.
+- 선수 경기 로그(월별/경기별 득점·출전시간·슛 성공률) 테이블이 없어 해당 질의는 정확히 지원되지 않습니다.
 - 질문이 데이터 범위를 벗어나면 확인 질문 또는 대체 제안을 제공합니다.
 
 ## 환경 설정
 
-`.env` 파일에 API 키를 설정합니다(실제 키는 노출하지 마세요).
+`.env`에 API 키와 실행 환경을 정의합니다.
 
-```
+```env
 OPENAI_API_KEY=YOUR_KEY_HERE
 OPENAI_MODEL=gpt-4.1-mini
 FINAL_ANSWER_MODEL=gpt-4.1-nano
@@ -56,13 +54,20 @@ OPENAI_TEMPERATURE=0.2
 DB_PATH=data/nba.sqlite
 MEMORY_DB_PATH=result/memory.sqlite
 CHAT_DB_PATH=result/chat.sqlite
+FEWSHOT_CANDIDATE_LIMIT=3
+```
+
+## 실행 방법
+
+```bash
+streamlit run src/app.py
 ```
 
 ## 스키마 덤프
 
 Streamlit 사이드바의 **Dump Schema** 버튼을 누르거나 아래 명령을 실행합니다.
 
-```
+```bash
 python -m src.db.schema_dump
 ```
 
@@ -70,35 +75,26 @@ python -m src.db.schema_dump
 - `result/schema.json`
 - `result/schema.md`
 
-## 실행 방법
-
-```
-streamlit run src/app.py
-```
-
 ## Streamlit UI
 
-- 모델: `gpt-4.1-mini` 기본값, `gpt-4.1-nano`/`gpt-4o-mini` 선택 가능
-- 최종 답변 모델: `FINAL_ANSWER_MODEL`로 고정(기본 `gpt-4.1-nano`)
-- Temperature: 0.1 ~ 2.0
-- Dataset Info: 데이터셋 요약/출처/테이블/지표 목록 표시
-- 추천 질의: 클릭으로 빠른 질문 실행
-- 결과 요약 카드: Rows/Season/Metric/Top-K를 카드로 표시
-- 표 출력 정책: 응답 본문에 포함된 마크다운 테이블을 기준으로 출력하며, 동일 데이터를 CSV로 제공합니다
-- 차트 출력: 사용자가 그래프/차트/시각화를 요청하면 📊 차트 섹션에 자동 렌더링
-- 차트 이미지 저장: `result/plot/{user_id}/{chat_id}/` 경로에 PNG로 저장(깃 추적 제외)
-- 지원 차트 유형: line, area, bar, stacked_bar, scatter, histogram, box
-- 채팅 목록: 좌측 사이드바에서 채팅 선택/제목 수정/삭제 가능
-- Dump Schema: `schema.json` / `schema.md` 갱신
-- Reset Conversation: 단기 메모리 초기화
-- Reset Long-term Memory: 장기 메모리 초기화
-- Thinking: 라우팅/플래닝/SQL 상태를 단계별로 표시(기본 접힘, Details 토글)
+- **모델 선택**: `gpt-4.1-mini` 기본값, `gpt-4.1-nano`/`gpt-4o-mini` 선택 가능
+- **최종 답변 모델**: `FINAL_ANSWER_MODEL`로 고정(기본 `gpt-4.1-nano`)
+- **Dataset Info**: 데이터셋 요약/출처/테이블/지표 목록 표시
+- **추천 질의**: 클릭으로 빠른 질문 실행
+- **결과 요약 카드**: Rows/Season/Metric/Top-K 표시
+- **표 출력 정책**: 응답 본문 마크다운 테이블과 CSV 다운로드가 동일한 데이터를 사용
+- **차트 출력**: 그래프/차트/시각화 요청 시 📊 차트 섹션 자동 렌더링
+- **차트 이미지 저장**: `result/plot/{user_id}/{chat_id}/` 경로에 PNG 저장(깃 추적 제외)
+- **채팅 목록**: 좌측 사이드바에서 채팅 선택/제목 수정/삭제 가능
+- **Thinking**: 라우팅/플래닝/SQL 진행 상태를 실시간 ⏳/✅로 표시(Details 토글)
+
+지원 차트 유형: `line`, `area`, `bar`, `stacked_bar`, `scatter`, `histogram`, `box`
 
 ## 로컬 테스트 (Streamlit 없이)
 
 Streamlit과 동일한 Scene/오케스트레이터 구성으로 로컬 실행합니다.
 
-```
+```bash
 python src/test/test_agent_flow.py
 ```
 
@@ -106,8 +102,8 @@ python src/test/test_agent_flow.py
 
 더미 구성으로 체인 로직만 빠르게 검증합니다.
 
-```
-python -m unittest -q src.test.test_chain_unit
+```bash
+python src/test/test_chain_unit.py
 ```
 
 ## 예시 질문
@@ -132,10 +128,9 @@ python -m unittest -q src.test.test_chain_unit
 
 ## 메모리 구조
 
-- 단기 메모리: 마지막 SQL/결과/슬롯 + 최근 대화 일부를 유지합니다(채팅 세션 단위).
-- 단기 메모리에는 직전 결과에서 추출한 팀/선수 엔티티도 포함되어 참조 질의를 보강합니다.
-- 장기 메모리: 자주 묻는 시즌/팀/지표 등 선호를 사용자 단위로 SQLite에 누적합니다(앱 재시작 이후에도 유지).
-- 장기 메모리는 `MEMORY_DB_PATH`로 경로를 변경할 수 있으며, Streamlit에서 별도 초기화 버튼을 제공합니다.
+- **단기 메모리**: 마지막 SQL/결과/슬롯 + 최근 대화 일부를 유지합니다(채팅 세션 단위).
+- **단기 메모리 엔티티**: 직전 결과에서 추출한 팀/선수 목록을 저장해 후속 질의를 보강합니다.
+- **장기 메모리**: 자주 묻는 시즌/팀/지표 등 선호를 사용자 단위로 SQLite에 누적합니다.
 
 ## 채팅 세션
 
@@ -147,32 +142,27 @@ python -m unittest -q src.test.test_chain_unit
 
 ### 생성 시점
 
-- `result/chat.sqlite` (Chat 히스토리): Streamlit 실행 중 최초로 채팅을 생성할 때 자동으로 만들어집니다.
-- `result/memory.sqlite` (Agent 메모리): 장기 메모리에 선호/프로필을 기록하는 순간 자동으로 만들어집니다.
-- 별도의 수동 생성 작업은 필요하지 않습니다. 로컬 실행 또는 테스트 실행만으로 생성됩니다.
+- `result/chat.sqlite` (Chat 히스토리): Streamlit 실행 중 최초 채팅 생성 시 자동 생성
+- `result/memory.sqlite` (Agent 메모리): 장기 메모리에 선호/프로필 기록 시 자동 생성
+- 별도의 수동 생성 작업은 필요하지 않습니다.
 
 ### 스키마 요약
 
 - `chat.sqlite` (Chat 히스토리)
-  - `chat_sessions`: 채팅 목록 메타(사용자 ID, 제목, 생성/갱신 시각).
-  - `chat_messages`: 채팅별 메시지/메타 JSON 기록.
+  - `chat_sessions`: 채팅 목록 메타(사용자 ID, 제목, 생성/갱신 시각)
+  - `chat_messages`: 채팅별 메시지/메타 JSON 기록
 - `memory.sqlite` (Agent 메모리)
-  - `preference_counts`: 선호 카운트(카테고리, 값, 횟수).
-  - `user_profile`: 사용자 기본값(예: 기본 시즌).
+  - `preference_counts`: 선호 카운트(카테고리, 값, 횟수)
+  - `user_profile`: 사용자 기본값(예: 기본 시즌)
 
-## 비즈니스 로직 주입
-
-- 지표 정의/컷 규칙/SQL 템플릿은 `src/metrics/metrics.yaml`에 한글로 상세히 정의됩니다.
-- 레지스트리(`src/metrics/registry.py`)가 해당 정의를 읽어 Direct Answer 및 SQL 생성 컨텍스트에 주입합니다.
-
-## Fewshot 추가 방법
+## Few-shot 추가 방법
 
 1. 기본 예시는 `src/prompt/sql_generation.py`의 `SQL_FEWSHOT_EXAMPLES`에서 관리합니다.
 2. 런타임에는 `FewshotGenerator`가 사용자 질문과 후보 메트릭을 기반으로 few-shot을 동적으로 생성합니다.
 3. `FewshotGenerator`는 LLM으로 필요한 테이블/컬럼을 먼저 선별해 스키마 컨텍스트를 축소합니다(실패 시 룰 기반 폴백).
 4. `FEWSHOT_CANDIDATE_LIMIT` 환경 변수로 후보 sql_template 개수를 조절할 수 있습니다(기본값 3).
 5. 예시에 쓰는 테이블/컬럼은 `result/schema.json`에 존재해야 합니다.
-6. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`도 함께 보강합니다.
+6. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`를 함께 보강합니다.
 
 예시 추가 패턴:
 ```
@@ -184,6 +174,7 @@ LIMIT 50;
 ```
 
 ## Agent 아키텍처
+
 ```mermaid
 flowchart TD
   U["User"] --> S["Scene"]
@@ -199,9 +190,9 @@ flowchart TD
   P -->|확인 필요| C["Clarifier"]
   C --> P
 
-  P -->|멀티 스텝| MS["Multi-step SQL Runner"]
-  P -->|단일 SQL| FS["Fewshot Generator"]
+  P --> FS["Fewshot Generator"]
   FS --> SG["SQL Generator"]
+  P -->|멀티 스텝| MS["Multi-step Planner/Runner"]
 
   O --> TS["Title Generator"]
   O --> CS["Chat Store"]
@@ -225,30 +216,29 @@ flowchart TD
 ```
 
 ### 에이전트 상세 설명
+
 - **Scene (`src/agent/scene.py`)**: Streamlit/로컬 테스트에서 동일한 실행 경로를 제공하는 래퍼입니다. `ask()`로 오케스트레이터를 호출하고, `reset()`으로 대화 메모리를 초기화합니다.
-- **Orchestrator (`src/agent/orchestrator.py`)**: 레지스트리/스키마 로딩, 체인 구성, 스트리밍 실행을 책임집니다. 예외 발생 시 안전한 폴백 응답을 만들고, 턴 시작/종료 시 메모리를 업데이트합니다.
-- **Router (`src/agent/router.py`)**: LLM 라우터가 기본이며, JSON 파싱 실패 시 키워드 폴백을 수행합니다. 메트릭 별칭을 통해 Direct/Reuse/SQL_REQUIRED를 분기하고, `route_reason`을 남깁니다.
-- **Planner (`src/agent/planner.py`)**: 엔티티/시즌/기간/지표/Top-K 슬롯을 구성하고, 부족하면 `clarify_question`을 제공합니다. 직전 슬롯을 참고해 멀티턴 추론을 보강합니다.
+- **Orchestrator (`src/agent/orchestrator.py`)**: 레지스트리/스키마 로드, 체인 구성, 스트리밍 실행을 담당합니다. 예외 발생 시 안전한 폴백 응답을 만들고, 턴 시작/종료 시 메모리를 업데이트합니다.
+- **Router (`src/agent/router.py`)**: LLM 라우터가 기본이며 JSON 파싱 실패 시 키워드 폴백을 수행합니다.  
+  메트릭 별칭을 통해 Direct/Reuse/SQL_REQUIRED를 분기하고 `route_reason`을 기록합니다.
+- **Planner (`src/agent/planner.py`)**: 엔티티/시즌/기간/지표/Top-K 슬롯을 구성하고, 부족하면 `clarify_question`을 제공합니다. 메트릭 누락 시 레지스트리 기준으로 보정/재시도합니다.
 - **Clarifier (`src/prompt/clarify.py`)**: 플래너가 부족한 정보를 발견했을 때 확인 질문을 생성합니다.
-- **Reuse Answer (`src/agent/router.py` 내 `apply_reuse_rules`)**: 직전 결과에 대해 정렬/필터/Top-K 후처리를 적용합니다. SQL 재실행 없이 DataFrame을 변형하고, 요약 문자열을 남깁니다.
+- **Reuse Answer (`src/agent/router.py` 내 `apply_reuse_rules`)**: 직전 결과에 대해 정렬/필터/Top-K 후처리를 적용합니다.
 - **Direct Answer (`src/agent/responder.py`)**: 메트릭 레지스트리 정의를 기반으로 지표 설명 응답을 생성합니다.
 - **General Answer (`src/agent/responder.py`)**: 가능한 데이터 범위와 사용법을 일반 안내로 응답합니다.
-- **Multi-step SQL Runner (`src/agent/chain.py`)**: 복합 질의를 단계별 SQL로 분해합니다. 예: 관중 상위 팀을 먼저 추출한 뒤 해당 팀 성적을 2단계로 결합합니다.
-- **SQL Generator (`src/agent/sql_generator.py`)**: 스키마/메트릭 정의/퓨샷을 바탕으로 SQL을 생성하고, 필요 시 수정을 재시도합니다.
+- **Fewshot Generator (`src/agent/fewshot_generator.py`)**: 후보 메트릭과 질의를 보고 필요한 테이블/컬럼을 선별하고, few-shot 예시를 구성합니다.
+- **Multi-step Planner/Runner (`src/agent/multi_step_planner.py`, `src/agent/chain.py`)**: 복합 질의를 단계별 질문으로 분해하고, 단계별 결과를 결합합니다.
+- **SQL Generator (`src/agent/sql_generator.py`)**: 선별된 스키마/메트릭 정의/few-shot을 바탕으로 SQL을 생성합니다.
 - **SQL Guard (`src/agent/guard.py`)**: SELECT-only/조건 없는 JOIN 금지/LIMIT 강제 등 안전 규칙을 적용합니다.
 - **DB Execute (`src/db/sqlite_client.py`)**: SQL을 실행하고 DataFrame을 반환합니다.
 - **Result Validator (`src/agent/validator.py`)**: 0행/컬럼 없음/NULL 과다를 감지해 재시도 여부를 결정합니다.
-- **Summarizer (`src/agent/summarizer.py`)**: 결과 미리보기와 적용 필터를 바탕으로 요약 응답을 생성합니다.
-- **Responder (`src/agent/responder.py`)**: Direct/Clarify/Reuse/General/Missing Metric 응답을 프롬프트 기반으로 생성합니다.
-- **Title Generator (`src/agent/title_generator.py`)**: 첫 질문을 기반으로 채팅 제목을 1회 생성합니다.
-- **Chat Store (`src/db/chat_store.py`)**: 채팅 세션/메시지를 SQLite에 저장해 새로고침 후에도 복원합니다.
+- **Summarizer (`src/agent/summarizer.py`)**: 조회 결과를 요약하고 분석 포인트를 생성합니다.
 
-### 메모리 동작 방식
-1. **턴 시작**: 오케스트레이터가 `memory.start_turn()`으로 사용자 입력 원문을 단기 메모리에 기록합니다.
-2. **라우팅 보강**: 라우터는 직전 SQL/결과/슬롯을 참고해 Reuse 여부를 판단하고, 사용 가능한 메트릭 별칭을 함께 고려합니다.
-3. **플래닝 보강**: 플래너는 직전 슬롯을 참고해 생략된 시즌/엔티티를 추정합니다. 체인은 참조 필터(직전 결과 팀/선수)를 반영합니다.
-4. **결과 저장**: SQL 실행 후 `update_sql_result()`로 마지막 SQL, 결과 DataFrame, 결과 스키마, 슬롯을 저장하고 엔티티를 추출합니다.
-5. **턴 종료 + 학습**: `finish_turn()`에서 응답/라우트/SQL/슬롯을 기록하고, 장기 메모리에 선호 신호를 누적합니다.
-6. **장기 메모리 구성**: `preference_counts`에는 시즌/팀/지표의 빈도, `user_profile`에는 기본 시즌/선호 팀 같은 명시적 기본값이 저장됩니다.
-7. **기본값 적용**: 다음 플래닝 시 장기 메모리의 기본 시즌/선호 팀이 슬롯과 필터에 자동 반영됩니다.
-8. **리셋 정책**: 새 채팅 전환 시 단기 메모리만 초기화하고, 장기 메모리는 Reset 버튼에서만 삭제됩니다.
+## 출력/로그
+
+- `log/` 폴더에 실행 로그를 JSON 형태로 남깁니다(깃 추적 제외).
+- 테스트 스크립트 로그도 `log/test_agent_flow_YYYYMMDDhhmmss.log` 형식으로 저장됩니다.
+
+## 참고
+
+- 차트/그래프 이미지는 런타임에 생성되는 산출물이며 Git에 포함되지 않습니다.

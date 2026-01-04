@@ -64,6 +64,22 @@ QUICK_PROMPTS = [
 
 DEFAULT_USER_ID = "developer"
 
+THINKING_STEP_ORDER = [
+    "Routing",
+    "Planning",
+    "Multi-step",
+    "Schema Select",
+    "Few-shot",
+    "SQL",
+    "Direct Answer",
+    "General Answer",
+    "Reuse Answer",
+    "Clarify",
+]
+
+THINKING_STATUS_RUNNING = "running"
+THINKING_STATUS_DONE = "done"
+
 
 class StreamlitChatApp:
     """
@@ -696,6 +712,7 @@ class StreamlitChatApp:
         multi_step_plan = result.get("multi_step_plan")
         fewshot_examples = result.get("fewshot_examples")
         schema_context = result.get("schema_context")
+        thinking_status = result.get("thinking_status")
 
         display_df: pd.DataFrame | None = None
         chart_spec: ChartSpec | None = None
@@ -775,6 +792,7 @@ class StreamlitChatApp:
                 fewshot_examples=fewshot_examples,
                 schema_context=schema_context,
                 message_index=message_index,
+                thinking_status=thinking_status,
             )
 
         if chart_spec and isinstance(display_df, pd.DataFrame):
@@ -840,12 +858,36 @@ class StreamlitChatApp:
 
         placeholder = st.empty()
         final_state: dict[str, object] | None = None
+        thinking_status: dict[str, str] = {}
+        sql_in_progress = False
 
         try:
-            for state in scene.orchestrator.stream(user_message):
+            for event in scene.orchestrator.stream(user_message):
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get("event_type")
+                node_name = event.get("node")
+                state = event.get("state") if isinstance(event.get("state"), dict) else event
                 if not isinstance(state, dict):
                     continue
-                final_state = state
+
+                if event_type is None:
+                    event_type = "state"
+
+                sql_in_progress = self._update_thinking_status(
+                    thinking_status,
+                    event_type=event_type,
+                    node_name=node_name,
+                    state=state,
+                    sql_in_progress=sql_in_progress,
+                )
+
+                if event_type == "final":
+                    thinking_status = self._finalize_thinking_status(thinking_status)
+                    final_state = state
+                else:
+                    final_state = state
+
                 with placeholder.container():
                     self._render_thinking_panel(
                         route=state.get("route"),
@@ -857,6 +899,7 @@ class StreamlitChatApp:
                         fewshot_examples=state.get("fewshot_examples"),
                         schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
+                        thinking_status=thinking_status,
                     )
         except Exception:
             placeholder.empty()
@@ -866,20 +909,128 @@ class StreamlitChatApp:
             placeholder.empty()
             return scene.ask(user_message)
 
-        with placeholder.container():
-            self._render_thinking_panel(
-                route=final_state.get("route"),
-                route_reason=final_state.get("route_reason"),
-                planned_slots=final_state.get("planned_slots"),
-                multi_step_plan=final_state.get("multi_step_plan"),
-                last_result_schema=final_state.get("last_result_schema"),
-                sql=final_state.get("sql"),
-                fewshot_examples=final_state.get("fewshot_examples"),
-                schema_context=final_state.get("schema_context"),
-                message_index=len(st.session_state.messages),
-            )
-
+        final_state["thinking_status"] = thinking_status
         return final_state
+
+    def _update_thinking_status(
+        self,
+        status: dict[str, str],
+        *,
+        event_type: str,
+        node_name: str | None,
+        state: dict[str, object],
+        sql_in_progress: bool,
+    ) -> bool:
+        """
+        스트리밍 이벤트에 따라 Thinking 상태를 갱신한다.
+
+        Args:
+            status: 단계별 상태 딕셔너리.
+            event_type: 스트림 이벤트 타입.
+            node_name: 실행된 노드 이름.
+            state: 현재까지 합쳐진 상태.
+            sql_in_progress: SQL 처리 진행 여부.
+
+        Returns:
+            갱신된 SQL 진행 플래그.
+        """
+
+        if event_type == "state":
+            if state.get("route"):
+                status["Routing"] = THINKING_STATUS_DONE
+            if state.get("planned_slots"):
+                status["Planning"] = THINKING_STATUS_DONE
+            if state.get("multi_step_plan"):
+                status["Multi-step"] = THINKING_STATUS_DONE
+            if state.get("schema_context"):
+                status["Schema Select"] = THINKING_STATUS_DONE
+            if state.get("fewshot_examples"):
+                status["Few-shot"] = THINKING_STATUS_DONE
+            if state.get("sql"):
+                status["SQL"] = THINKING_STATUS_DONE
+            return sql_in_progress
+
+        if not node_name:
+            return sql_in_progress
+
+        if event_type == "task":
+            if node_name == "router":
+                status["Routing"] = THINKING_STATUS_RUNNING
+            elif node_name == "plan":
+                status["Planning"] = THINKING_STATUS_RUNNING
+            elif node_name == "multi_step":
+                status["Multi-step"] = THINKING_STATUS_RUNNING
+                sql_in_progress = True
+            elif node_name == "fewshot":
+                status["Schema Select"] = THINKING_STATUS_RUNNING
+            elif node_name == "generate_sql":
+                status["SQL"] = THINKING_STATUS_RUNNING
+                sql_in_progress = True
+            elif node_name == "direct_answer":
+                status["Direct Answer"] = THINKING_STATUS_RUNNING
+            elif node_name == "general_answer":
+                status["General Answer"] = THINKING_STATUS_RUNNING
+            elif node_name == "reuse":
+                status["Reuse Answer"] = THINKING_STATUS_RUNNING
+            elif node_name == "clarify":
+                status["Clarify"] = THINKING_STATUS_RUNNING
+            return sql_in_progress
+
+        if event_type == "task_result":
+            if node_name == "router":
+                status["Routing"] = THINKING_STATUS_DONE
+            elif node_name == "plan":
+                status["Planning"] = THINKING_STATUS_DONE
+            elif node_name == "multi_step":
+                status["Multi-step"] = THINKING_STATUS_DONE
+                if state.get("sql"):
+                    status["SQL"] = THINKING_STATUS_DONE
+                sql_in_progress = False
+            elif node_name == "fewshot":
+                if "Schema Select" in status:
+                    status["Schema Select"] = THINKING_STATUS_DONE
+                if state.get("schema_context"):
+                    status["Schema Select"] = THINKING_STATUS_DONE
+                if state.get("fewshot_examples"):
+                    status["Few-shot"] = THINKING_STATUS_DONE
+            elif node_name == "generate_sql":
+                if "SQL" not in status:
+                    status["SQL"] = THINKING_STATUS_RUNNING
+                    sql_in_progress = True
+            elif node_name == "summarize":
+                if sql_in_progress:
+                    status["SQL"] = THINKING_STATUS_DONE
+                sql_in_progress = False
+            elif node_name == "direct_answer":
+                status["Direct Answer"] = THINKING_STATUS_DONE
+            elif node_name == "general_answer":
+                status["General Answer"] = THINKING_STATUS_DONE
+            elif node_name == "reuse":
+                status["Reuse Answer"] = THINKING_STATUS_DONE
+            elif node_name == "clarify":
+                status["Clarify"] = THINKING_STATUS_DONE
+            elif node_name == "finalize_error":
+                if sql_in_progress:
+                    status["SQL"] = THINKING_STATUS_DONE
+                sql_in_progress = False
+
+        return sql_in_progress
+
+    def _finalize_thinking_status(self, status: dict[str, str]) -> dict[str, str]:
+        """
+        스트리밍 종료 시 진행 중 상태를 완료 상태로 전환한다.
+
+        Args:
+            status: 단계별 상태 딕셔너리.
+
+        Returns:
+            완료 상태로 정리된 딕셔너리.
+        """
+
+        for key, value in list(status.items()):
+            if value == THINKING_STATUS_RUNNING:
+                status[key] = THINKING_STATUS_DONE
+        return status
 
     def _render_thinking_panel(
         self,
@@ -893,6 +1044,7 @@ class StreamlitChatApp:
         fewshot_examples: str | None,
         schema_context: str | None,
         message_index: int,
+        thinking_status: dict[str, str] | None = None,
     ) -> None:
         """
         Thinking(단계별 상태)을 렌더링한다.
@@ -907,6 +1059,7 @@ class StreamlitChatApp:
             fewshot_examples: few-shot 예시 문자열.
             schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
+            thinking_status: 단계별 상태 딕셔너리(스트리밍용).
 
         Side Effects:
             Thinking 패널 UI를 렌더링한다.
@@ -918,37 +1071,105 @@ class StreamlitChatApp:
         st.markdown('<span class="thinking-pill">Thinking</span>', unsafe_allow_html=True)
         with st.expander("Details", expanded=False):
 
-            def _render_step(label: str, data: dict[str, object]) -> None:
+            def _render_step(label: str, status: str, data: dict[str, object] | None) -> None:
+                icon = "✅" if status == THINKING_STATUS_DONE else "⏳"
+                if status == THINKING_STATUS_DONE and data:
+                    with st.expander(f"{icon} {label}", expanded=False):
+                        st.json(data, expanded=True)
+                else:
+                    st.markdown(f"- {icon} {label}")
+
+            if thinking_status:
+                for label in THINKING_STEP_ORDER:
+                    if label not in thinking_status:
+                        continue
+                    data = self._build_thinking_step_data(
+                        label,
+                        route=route,
+                        route_reason=route_reason,
+                        planned_slots=planned_slots,
+                        multi_step_plan=multi_step_plan,
+                        sql=sql,
+                        fewshot_examples=fewshot_examples,
+                        schema_context=schema_context,
+                    )
+                    _render_step(label, thinking_status[label], data)
+                return
+
+            def _render_done_step(label: str, data: dict[str, object]) -> None:
                 with st.expander(f"✅ {label}", expanded=False):
                     st.json(data, expanded=True)
 
             if route:
-                _render_step("Routing", {"route": route, "route_reason": route_reason})
+                _render_done_step("Routing", {"route": route, "route_reason": route_reason})
             else:
                 st.markdown("- ⏳ Routing")
 
             if planned_slots:
-                _render_step("Planning", {"planned_slots": planned_slots})
+                _render_done_step("Planning", {"planned_slots": planned_slots})
             else:
                 st.markdown("- ⏳ Planning")
 
             if multi_step_plan:
-                _render_step("Multi-step", {"multi_step_plan": multi_step_plan})
+                _render_done_step("Multi-step", {"multi_step_plan": multi_step_plan})
 
             if schema_context:
-                _render_step("Schema Select", {"schema_context": schema_context})
+                _render_done_step("Schema Select", {"schema_context": schema_context})
             else:
                 st.markdown("- ⏳ Schema Select")
 
             if fewshot_examples:
-                _render_step("Few-shot", {"fewshot_examples": fewshot_examples})
+                _render_done_step("Few-shot", {"fewshot_examples": fewshot_examples})
             else:
                 st.markdown("- ⏳ Few-shot")
 
             if sql:
-                _render_step("SQL", {"sql": sql})
+                _render_done_step("SQL", {"sql": sql})
             else:
                 st.markdown("- ⏳ SQL")
+
+    def _build_thinking_step_data(
+        self,
+        label: str,
+        *,
+        route: str | None,
+        route_reason: str | None,
+        planned_slots: dict[str, object] | None,
+        multi_step_plan: dict[str, object] | None,
+        sql: str | None,
+        fewshot_examples: str | None,
+        schema_context: str | None,
+    ) -> dict[str, object] | None:
+        """
+        Thinking 상세 정보를 단계별로 구성한다.
+
+        Args:
+            label: 단계 라벨.
+            route: 라우팅 결과.
+            route_reason: 라우팅 근거.
+            planned_slots: 플래너 슬롯.
+            multi_step_plan: 멀티 스텝 계획.
+            sql: 생성/실행 SQL.
+            fewshot_examples: few-shot 예시 문자열.
+            schema_context: 선별된 스키마 컨텍스트.
+
+        Returns:
+            단계별 상세 데이터(없으면 None).
+        """
+
+        if label == "Routing" and route:
+            return {"route": route, "route_reason": route_reason}
+        if label == "Planning" and planned_slots:
+            return {"planned_slots": planned_slots}
+        if label == "Multi-step" and multi_step_plan:
+            return {"multi_step_plan": multi_step_plan}
+        if label == "Schema Select" and schema_context:
+            return {"schema_context": schema_context}
+        if label == "Few-shot" and fewshot_examples:
+            return {"fewshot_examples": fewshot_examples}
+        if label == "SQL" and sql:
+            return {"sql": sql}
+        return None
 
     def _render_result_summary(self, dataframe: pd.DataFrame, planned_slots: dict[str, object] | None) -> None:
         """
