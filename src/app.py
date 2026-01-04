@@ -177,7 +177,9 @@ class StreamlitChatApp:
             user_text = quick_prompt
 
         if user_text:
-            chat_store.add_message(user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text)
+            chat_store.add_message(
+                user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text
+            )
             self._maybe_set_chat_title(chat_store, title_generator, user_id, st.session_state.active_chat_id, user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
 
@@ -915,6 +917,7 @@ class StreamlitChatApp:
 
         st.markdown('<span class="thinking-pill">Thinking</span>', unsafe_allow_html=True)
         with st.expander("Details", expanded=False):
+
             def _render_step(label: str, data: dict[str, object]) -> None:
                 with st.expander(f"✅ {label}", expanded=False):
                     st.json(data, expanded=True)
@@ -933,9 +936,9 @@ class StreamlitChatApp:
                 _render_step("Multi-step", {"multi_step_plan": multi_step_plan})
 
             if schema_context:
-                _render_step("선별된 스키마", {"schema_context": schema_context})
+                _render_step("Schema Select", {"schema_context": schema_context})
             else:
-                st.markdown("- ⏳ 선별된 스키마")
+                st.markdown("- ⏳ Schema Select")
 
             if fewshot_examples:
                 _render_step("Few-shot", {"fewshot_examples": fewshot_examples})
