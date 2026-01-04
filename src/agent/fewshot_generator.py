@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,8 @@ class FewshotGenerator:
         if not payload.candidate_metrics:
             return SQL_FEWSHOT_EXAMPLES
 
+        prebuilt = _collect_metric_examples(payload.candidate_metrics, payload.target_count)
+
         prompt = FEWSHOT_PROMPT.format(
             user_question=payload.user_question,
             planned_slots=json.dumps(payload.planned_slots, ensure_ascii=False),
@@ -127,12 +130,14 @@ class FewshotGenerator:
                 ],
             )
         except Exception:  # noqa: BLE001
-            return SQL_FEWSHOT_EXAMPLES
+            return _format_examples(prebuilt, limit=payload.target_count) or SQL_FEWSHOT_EXAMPLES
 
         content = response.choices[0].message.content or ""
         examples = _parse_examples(content)
         formatted = _format_examples(examples, limit=payload.target_count)
-        return formatted or SQL_FEWSHOT_EXAMPLES
+        if formatted:
+            return formatted
+        return _format_examples(prebuilt, limit=payload.target_count) or SQL_FEWSHOT_EXAMPLES
 
     def select_schema(self, payload: SchemaSelectionInput) -> SchemaSelectionResult:
         """
@@ -234,6 +239,67 @@ def _format_examples(examples: list[dict[str, str]], *, limit: int) -> str:
             lines.append(f"설명: {example['note']}")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def _collect_metric_examples(
+    candidate_metrics: list[dict[str, Any]], limit: int
+) -> list[dict[str, str]]:
+    """
+    메트릭 정의에 포함된 예시를 few-shot 포맷으로 변환한다.
+
+    Args:
+        candidate_metrics: 후보 메트릭 컨텍스트.
+        limit: 최대 예시 개수.
+
+    Returns:
+        예시 목록.
+    """
+
+    examples: list[dict[str, str]] = []
+    for metric in candidate_metrics:
+        template = str(metric.get("sql_template") or "").strip()
+        for raw in metric.get("examples", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            question = str(raw.get("question") or "").strip()
+            note = str(raw.get("note") or "").strip()
+            sql = str(raw.get("sql") or "").strip()
+            if not sql and template:
+                params = raw.get("params")
+                if isinstance(params, dict):
+                    rendered = _render_template(template, params)
+                    if rendered:
+                        sql = rendered
+            sql = _strip_code_fence(sql)
+            if not question or not sql:
+                continue
+            examples.append({"question": question, "sql": sql, "note": note})
+            if len(examples) >= max(limit, 0):
+                return examples
+    return examples
+
+
+def _render_template(template: str, params: dict[str, Any]) -> str | None:
+    """
+    SQL 템플릿을 예시 파라미터로 치환한다.
+
+    Args:
+        template: SQL 템플릿 문자열.
+        params: 치환 파라미터.
+
+    Returns:
+        치환된 SQL 문자열(실패 시 None).
+    """
+
+    placeholders = set(re.findall(r"{([a-zA-Z_][a-zA-Z0-9_]*)}", template))
+    optional_keys = {"team_filter_home", "team_filter_away", "team_filter", "date_filter", "season_filter"}
+    merged = {**params}
+    for key in optional_keys:
+        merged.setdefault(key, "")
+    missing = placeholders - set(merged.keys())
+    if missing:
+        return None
+    return template.format_map(merged)
 
 
 def _parse_schema_selection(text: str) -> SchemaSelectionResult:

@@ -28,6 +28,9 @@ FEWSHOT_PROMPT = dedent(
 - SQL은 코드블록 없이 단일 문자열로만 출력한다.
 - 예시는 JSON으로만 출력한다.
 - 가능한 경우 candidate_metrics의 sql_template을 채워 사용한다.
+- candidate_metrics에 examples가 있으면 우선 활용한다.
+- examples는 참고용이며, 사용자 질문과 관련이 있는 예시들로 재구성한다.
+- SQLGenerator가 후속 처리를 하므로, 정답 맞추기에 집착하지 말고 few-shot 구성에 집중한다.
 
 출력 형식(필수):
 {{"examples":[{{"question":"...","sql":"...","note":"..."}}, ...]}}

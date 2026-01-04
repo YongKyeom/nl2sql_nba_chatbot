@@ -43,6 +43,7 @@ class MetricDefinition:
         required_tables: 필요한 테이블 목록.
         required_columns: 필요한 컬럼 목록.
         sql_template: SQL 템플릿(가능한 경우).
+        examples: few-shot/검증용 예시 목록.
         cut_rules: 컷 규칙(경기 수, 분 등).
     """
 
@@ -53,6 +54,7 @@ class MetricDefinition:
     required_tables: list[str]
     required_columns: list[str]
     sql_template: str | None
+    examples: list[dict[str, Any]]
     cut_rules: dict[str, Any]
 
     def all_names(self) -> list[str]:
@@ -230,6 +232,7 @@ class MetricsRegistry:
             "required_tables": metric.required_tables,
             "required_columns": metric.required_columns,
             "sql_template": metric.sql_template,
+            "examples": metric.examples,
             "cut_rules": metric.cut_rules,
         }
 
@@ -261,6 +264,7 @@ def _build_metric(raw: dict[str, Any]) -> MetricDefinition:
         required_tables=list(raw.get("required_tables", [])),
         required_columns=list(raw.get("required_columns", [])),
         sql_template=raw.get("sql_template"),
+        examples=list(raw.get("examples", [])),
         cut_rules=raw.get("cut_rules", {}),
     )
 
