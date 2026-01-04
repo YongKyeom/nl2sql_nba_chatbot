@@ -7,6 +7,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from src.prompt.multi_step_sql import MULTI_STEP_SQL_PROMPT
 from src.prompt.sql_generation import SQL_FEWSHOT_EXAMPLES, SQL_GENERATION_PROMPT
 from src.prompt.sql_repair import SQL_REPAIR_PROMPT
 from src.prompt.system import SYSTEM_PROMPT
@@ -54,6 +55,32 @@ class SQLRepairInput:
     failure_reason: str
     metric_context: dict[str, Any]
     schema_context: str
+
+
+@dataclass(frozen=True)
+class MultiStepSQLInput:
+    """
+    멀티 스텝 계획을 단일 SQL로 합성하기 위한 입력 정보.
+
+    Args:
+        user_question: 사용자 질문.
+        planned_slots: 플래너 슬롯 딕셔너리.
+        multi_step_plan: 멀티 스텝 계획 딕셔너리.
+        metric_contexts: 관련 메트릭 컨텍스트 목록.
+        schema_context: 스키마 요약 문자열.
+        last_sql: 직전 SQL.
+        context_hint: 대화 맥락 요약.
+        fewshot_examples: SQL 생성 예시 문자열.
+    """
+
+    user_question: str
+    planned_slots: dict[str, Any]
+    multi_step_plan: dict[str, Any]
+    metric_contexts: list[dict[str, Any]]
+    schema_context: str
+    last_sql: str | None = None
+    context_hint: str | None = None
+    fewshot_examples: str | None = None
 
 
 class SQLGenerator:
@@ -126,6 +153,39 @@ class SQLGenerator:
             failure_reason=payload.failure_reason,
             metric_context=json.dumps(payload.metric_context, ensure_ascii=False),
             schema_context=payload.schema_context,
+        )
+        response = self._client.chat.completions.create(
+            model=self._model,
+            temperature=self._temperature,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content or ""
+        return _strip_code_fence(content)
+
+    def generate_multi_step_sql(self, payload: MultiStepSQLInput) -> str:
+        """
+        멀티 스텝 계획을 단일 SQL로 합성한다.
+
+        Args:
+            payload: 멀티 스텝 SQL 합성 입력.
+
+        Returns:
+            생성된 SQL 문자열.
+        """
+
+        fewshot_examples = payload.fewshot_examples or SQL_FEWSHOT_EXAMPLES
+        prompt = MULTI_STEP_SQL_PROMPT.format(
+            user_question=payload.user_question,
+            planned_slots=json.dumps(payload.planned_slots, ensure_ascii=False),
+            multi_step_plan=json.dumps(payload.multi_step_plan, ensure_ascii=False),
+            metric_contexts=json.dumps(payload.metric_contexts, ensure_ascii=False),
+            schema_context=payload.schema_context,
+            last_sql=payload.last_sql or "없음",
+            context_hint=payload.context_hint or "없음",
+            fewshot_examples=fewshot_examples,
         )
         response = self._client.chat.completions.create(
             model=self._model,

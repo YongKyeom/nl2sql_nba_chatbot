@@ -35,12 +35,14 @@ class MultiStepPlanResult:
 
     Args:
         use_multi_step: 멀티 스텝 여부.
+        execution_mode: 실행 방식(single_sql 또는 multi_sql).
         steps: 멀티 스텝 단계 목록.
         combine: 결과 결합 규칙.
         reason: 판단 근거.
     """
 
     use_multi_step: bool
+    execution_mode: str | None
     steps: list[dict[str, Any]]
     combine: dict[str, Any] | None
     reason: str | None
@@ -92,7 +94,7 @@ class MultiStepPlanner:
                 ],
             )
         except Exception:  # noqa: BLE001
-            return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=None)
+            return MultiStepPlanResult(use_multi_step=False, execution_mode=None, steps=[], combine=None, reason=None)
 
         content = response.choices[0].message.content or ""
         return _parse_plan_result(content)
@@ -117,21 +119,40 @@ def _parse_plan_result(text: str) -> MultiStepPlanResult:
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError:
-        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=None)
+        return MultiStepPlanResult(use_multi_step=False, execution_mode=None, steps=[], combine=None, reason=None)
 
     use_multi_step = bool(payload.get("use_multi_step"))
     reason = str(payload.get("reason") or "").strip() if isinstance(payload, dict) else None
     steps = payload.get("steps", []) if isinstance(payload, dict) else []
     combine = payload.get("combine") if isinstance(payload, dict) else None
+    execution_mode = str(payload.get("execution_mode") or "").strip() if isinstance(payload, dict) else ""
+    if execution_mode not in {"single_sql", "multi_sql"}:
+        execution_mode = ""
 
     if not use_multi_step:
-        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=reason or None)
+        # LLM이 "단일 SQL로 가능"이라는 의미로 use_multi_step=false를 반환하더라도,
+        # steps/combine이 존재하면 합성 계획으로 간주해 후속 단계에서 활용한다.
+        if not (isinstance(steps, list) and steps):
+            return MultiStepPlanResult(
+                use_multi_step=False,
+                execution_mode=None,
+                steps=[],
+                combine=None,
+                reason=reason or None,
+            )
+        use_multi_step = True
 
     if not isinstance(steps, list):
-        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=reason or None)
+        return MultiStepPlanResult(use_multi_step=False, execution_mode=None, steps=[], combine=None, reason=reason or None)
 
     normalized_steps = [step for step in steps if isinstance(step, dict)]
     if not normalized_steps:
-        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=reason or None)
+        return MultiStepPlanResult(use_multi_step=False, execution_mode=None, steps=[], combine=None, reason=reason or None)
 
-    return MultiStepPlanResult(use_multi_step=True, steps=normalized_steps, combine=combine, reason=reason or None)
+    return MultiStepPlanResult(
+        use_multi_step=True,
+        execution_mode=execution_mode or "multi_sql",
+        steps=normalized_steps,
+        combine=combine,
+        reason=reason or None,
+    )

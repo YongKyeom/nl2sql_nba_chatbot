@@ -199,7 +199,7 @@ class DummyMultiStepPlanner:
             멀티 스텝 계획 결과.
         """
 
-        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=None)
+        return MultiStepPlanResult(use_multi_step=False, execution_mode=None, steps=[], combine=None, reason=None)
 
 
 class DummySummarizer:

@@ -20,6 +20,11 @@ MULTI_STEP_PLAN_PROMPT = dedent(
 - 멀티 스텝이 필요하면 단계별 계획(steps)을 제시한다.
 
 규칙:
+- 가능한 경우 단일 SQL(CTE + JOIN)로 해결하는 것을 우선한다.
+- Step1 결과를 Step2에서 단순히 필터(IN)로만 쓰는 패턴은 보통 단일 SQL로 합칠 수 있다.
+- 여러 지표를 결합/비교하거나, 중간 집합을 만든 뒤 다른 지표를 붙이는 경우에는
+  단일 SQL로 가능하더라도 use_multi_step=true로 계획(steps/combine)을 반드시 제공한다.
+  이때 execution_mode="single_sql"로 표시한다.
 - 멀티 스텝이 필요 없으면 use_multi_step=false로 반환한다.
 - steps는 2~4개로 제한한다.
 - 이전 결과를 사용하는 경우 filters에 "__from_previous__"를 넣는다.
@@ -28,9 +33,23 @@ MULTI_STEP_PLAN_PROMPT = dedent(
 - 출력은 JSON 한 줄로만 응답한다.
 
 출력 형식(필수):
-{{"use_multi_step":true,"reason":"...","steps":[{{"question":"...","overrides":{{...}},"filters":{{...}}}},...],"combine":{{"method":"left_join","left_step":1,"right_step":2,"on":["team_abbreviation"]}}}}
+{{
+  "use_multi_step": true,
+  "execution_mode": "single_sql|multi_sql",
+  "reason": "...",
+  "steps": [
+    {{"question":"...","overrides":{{...}},"filters":{{...}}}},
+    ...
+  ],
+  "combine": {{"method":"left_join","left_step":1,"right_step":2,"on":["team_abbreviation"]}}
+}}
 또는
 {{"use_multi_step":false,"reason":"..."}}
+
+단일 SQL(single_sql)로 충분한 예시:
+- "관중 상위 10개 팀의 시즌 승률을 표로 보여줘"
+  - Step1(관중 Top-K 팀)과 Step2(해당 팀 승률 계산)를 CTE로 만들고 JOIN하면 1개의 SQL로 가능
+  - 이 경우 execution_mode="single_sql"을 우선한다.
 
 [사용자 질문]
 {user_question}

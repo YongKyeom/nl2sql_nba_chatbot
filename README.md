@@ -10,6 +10,8 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 - **SQL Guard + 결과 검증 재시도**로 안정성 강화.
 - **이전 결과 재사용(정렬/필터/Top-K)** 및 일반 안내 응답 지원.
 - **멀티스텝 플래닝**으로 복합 질의를 단계별 SQL로 처리.
+- 멀티스텝 질의는 **단일 SQL(CTE + JOIN)로 합성 가능한 경우 1번의 SQL로 실행**하고,
+  그렇지 않으면 단계별 SQL 실행 후 결과를 결합합니다.
 - **Thinking 패널 실시간 업데이트**: 실행 중인 Agent만 ⏳, 완료 시 ✅ 표시.
 - **최종 답변 스트리밍**으로 자연스러운 출력 경험 제공.
 - **차트 자동 생성**: 그래프/차트 요청 시 📊 차트 섹션에 렌더링.
@@ -228,6 +230,7 @@ flowchart TD
 - **General Answer (`src/agent/responder.py`)**: 가능한 데이터 범위와 사용법을 일반 안내로 응답합니다.
 - **Fewshot Generator (`src/agent/fewshot_generator.py`)**: 후보 메트릭과 질의를 보고 필요한 테이블/컬럼을 선별하고, few-shot 예시를 구성합니다.
 - **Multi-step Planner/Runner (`src/agent/multi_step_planner.py`, `src/agent/chain.py`)**: 복합 질의를 단계별 질문으로 분해하고, 단계별 결과를 결합합니다.
+- **Multi-step Single SQL (`src/prompt/multi_step_sql.py`)**: 멀티스텝 계획이 JOIN으로 합성 가능한 경우, 한 번의 SQL(CTE + JOIN)로 합성해 실행합니다.
 - **SQL Generator (`src/agent/sql_generator.py`)**: 선별된 스키마/메트릭 정의/few-shot을 바탕으로 SQL을 생성합니다.
 - **SQL Guard (`src/agent/guard.py`)**: SELECT-only/조건 없는 JOIN 금지/LIMIT 강제 등 안전 규칙을 적용합니다.
 - **DB Execute (`src/db/sqlite_client.py`)**: SQL을 실행하고 DataFrame을 반환합니다.

@@ -961,6 +961,9 @@ class StreamlitChatApp:
             elif node_name == "multi_step":
                 status["Multi-step"] = THINKING_STATUS_RUNNING
                 sql_in_progress = True
+            elif node_name == "multi_step_single_sql":
+                status["SQL"] = THINKING_STATUS_RUNNING
+                sql_in_progress = True
             elif node_name == "fewshot":
                 status["Schema Select"] = THINKING_STATUS_RUNNING
             elif node_name == "generate_sql":
@@ -981,8 +984,14 @@ class StreamlitChatApp:
                 status["Routing"] = THINKING_STATUS_DONE
             elif node_name == "plan":
                 status["Planning"] = THINKING_STATUS_DONE
+                if state.get("multi_step_plan"):
+                    status["Multi-step"] = THINKING_STATUS_DONE
             elif node_name == "multi_step":
                 status["Multi-step"] = THINKING_STATUS_DONE
+                if state.get("sql"):
+                    status["SQL"] = THINKING_STATUS_DONE
+                sql_in_progress = False
+            elif node_name == "multi_step_single_sql":
                 if state.get("sql"):
                     status["SQL"] = THINKING_STATUS_DONE
                 sql_in_progress = False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 import traceback
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from src.agent.multi_step_planner import MultiStepPlanInput, MultiStepPlanner
 from src.agent.planner import Planner, PlannerOutput, PlannerSlots
 from src.agent.responder import Responder
 from src.agent.router import apply_reuse_rules, Route, RouterLLM, RoutingContext
-from src.agent.sql_generator import SQLGenerationInput, SQLGenerator, SQLRepairInput
+from src.agent.sql_generator import MultiStepSQLInput, SQLGenerationInput, SQLGenerator, SQLRepairInput
 from src.agent.summarizer import Summarizer, SummaryInput
 from src.agent.validator import ResultValidator
 from src.db.schema_store import SchemaStore
@@ -65,6 +66,7 @@ class MultiStepPlan(TypedDict, total=False):
     steps: list[dict[str, Any]]
     combine: dict[str, Any] | None
     reason: str | None
+    execution_mode: str | None
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ def build_agent_chain(deps: AgentDependencies):
     graph.add_node("plan", lambda state: _plan_node(state, deps))
     graph.add_node("clarify", lambda state: _clarify_node(state, deps))
     graph.add_node("multi_step", lambda state: _multi_step_node(state, deps))
+    graph.add_node("multi_step_single_sql", lambda state: _multi_step_single_sql_node(state, deps))
     graph.add_node("fewshot", lambda state: _fewshot_node(state, deps))
     graph.add_node("generate_sql", lambda state: _generate_sql_node(state, deps))
     graph.add_node("guard", lambda state: _guard_node(state, deps))
@@ -161,14 +164,25 @@ def build_agent_chain(deps: AgentDependencies):
         _fewshot_selector,
         {
             "multi_step": "multi_step",
+            "multi_step_single_sql": "multi_step_single_sql",
             "generate_sql": "generate_sql",
         },
     )
     graph.add_edge("generate_sql", "guard")
+
+    graph.add_conditional_edges(
+        "multi_step_single_sql",
+        _single_sql_selector,
+        {
+            "fallback": "multi_step",
+            "continue": "guard",
+        },
+    )
     graph.add_conditional_edges(
         "guard",
-        _error_selector,
+        _guard_selector,
         {
+            "fallback": "multi_step",
             "error": "finalize_error",
             "continue": "execute",
         },
@@ -177,8 +191,9 @@ def build_agent_chain(deps: AgentDependencies):
     graph.add_edge("execute", "validate")
     graph.add_conditional_edges(
         "validate",
-        _error_selector,
+        _validate_selector,
         {
+            "fallback": "multi_step",
             "error": "finalize_error",
             "continue": "summarize",
         },
@@ -492,6 +507,103 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
     return {"sql": sql}
 
 
+def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+    """
+    멀티 스텝 계획을 단일 SQL로 합성한다.
+
+    Args:
+        state: 현재 상태.
+        deps: 의존성.
+
+    Returns:
+        업데이트된 상태.
+    """
+
+    plan = state.get("multi_step_plan")
+    if not isinstance(plan, dict):
+        return {
+            "error": "멀티 스텝 계획이 없습니다.",
+            "final_answer": "요청을 처리하는 중 오류가 발생했습니다.",
+        }
+
+    metric_contexts: list[dict[str, Any]] = []
+    for metric_name in _metrics_for_multi_step(plan):
+        metric = deps.registry.get(metric_name)
+        if metric is None:
+            continue
+        metric_contexts.append(deps.registry.build_sql_context(metric))
+
+    if not metric_contexts:
+        return {
+            "error": "메트릭 정의를 찾을 수 없습니다.",
+            "final_answer": "요청을 처리할 수 없습니다. 다른 지표로 질문해 주세요.",
+        }
+
+    base_slots = state.get("planned_slots", {})
+    planned_slots_for_sql = copy.deepcopy(base_slots) if isinstance(base_slots, dict) else {}
+    default_season_id = _season_year_to_id(str(planned_slots_for_sql.get("season") or ""))
+    if default_season_id:
+        planned_slots_for_sql.setdefault("filters", {})
+        if isinstance(planned_slots_for_sql["filters"], dict):
+            planned_slots_for_sql["filters"].setdefault("season_id", default_season_id)
+
+    plan_for_sql: dict[str, Any] = copy.deepcopy(plan)
+    for step in plan_for_sql.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        overrides = step.get("overrides")
+        filters = step.get("filters")
+
+        season_value: str | None = None
+        if isinstance(overrides, dict) and isinstance(overrides.get("season"), str):
+            season_value = overrides.get("season")
+        elif isinstance(filters, dict) and isinstance(filters.get("season"), str):
+            season_value = filters.get("season")
+
+        if not season_value:
+            continue
+
+        season_id = _season_year_to_id(season_value)
+        if not season_id:
+            continue
+
+        step.setdefault("resolved", {})
+        if isinstance(step["resolved"], dict):
+            step["resolved"].setdefault("season_id", season_id)
+
+        if isinstance(overrides, dict):
+            overrides.setdefault("season_id", season_id)
+        if isinstance(filters, dict):
+            filters.setdefault("season_id", season_id)
+
+    schema_context = state.get("schema_context") or deps.schema_store.build_context()
+    try:
+        sql = deps.sql_generator.generate_multi_step_sql(
+            MultiStepSQLInput(
+                user_question=state["user_message"],
+                planned_slots=planned_slots_for_sql,
+                multi_step_plan=plan_for_sql,
+                metric_contexts=metric_contexts,
+                schema_context=schema_context,
+                last_sql=deps.memory.last_sql,
+                context_hint=build_context_hint(deps.memory),
+                fewshot_examples=state.get("fewshot_examples"),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "error": f"단일 SQL 합성 실패: {exc}",
+            "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
+        }
+
+    if not sql or not str(sql).strip():
+        return {
+            "error": "단일 SQL 합성 결과가 비어 있습니다.",
+        }
+
+    return {"sql": sql, "error": None, "error_detail": None}
+
+
 def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     멀티 스텝 실행 노드.
@@ -585,6 +697,8 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         "sql": final_sql,
         "result_df": final_df,
         "last_result_schema": list(final_df.columns),
+        "error": None,
+        "error_detail": None,
     }
 
 
@@ -800,6 +914,48 @@ def _resolve_metric_name(
             return candidates[0].name
 
     return None
+
+
+def _infer_execution_mode(
+    steps: list[dict[str, Any]],
+    combine: dict[str, Any] | None,
+) -> str:
+    """
+    멀티 스텝 계획이 단일 SQL로 합성 가능한지 간단히 추정한다.
+
+    LLM이 execution_mode를 잘못 판단하거나 누락하는 경우를 대비해,
+    보수적으로 single_sql 후보를 탐지한다.
+
+    Args:
+        steps: 멀티 스텝 단계 목록.
+        combine: 결합 규칙.
+
+    Returns:
+        "single_sql" 또는 "multi_sql".
+    """
+
+    if not isinstance(combine, dict):
+        return "multi_sql"
+
+    method = str(combine.get("method") or "").lower()
+    if method not in {"left_join", "inner_join", "right_join"}:
+        return "multi_sql"
+
+    on_keys = combine.get("on")
+    if not isinstance(on_keys, list) or not on_keys:
+        return "multi_sql"
+
+    if len(steps) < 2:
+        return "multi_sql"
+
+    for step in steps:
+        filters = step.get("filters")
+        if not isinstance(filters, dict):
+            continue
+        if "__from_previous__" in filters.values():
+            return "single_sql"
+
+    return "multi_sql"
 
 
 def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
@@ -1085,9 +1241,68 @@ def _fewshot_selector(state: AgentState) -> str:
         다음 노드 키.
     """
 
-    if state.get("multi_step_plan"):
+    multi_step_plan = state.get("multi_step_plan")
+    if isinstance(multi_step_plan, dict):
+        if multi_step_plan.get("execution_mode") == "single_sql":
+            return "multi_step_single_sql"
         return "multi_step"
     return "generate_sql"
+
+
+def _single_sql_selector(state: AgentState) -> str:
+    """
+    단일 SQL 합성 실패 시 멀티스텝으로 폴백한다.
+
+    Args:
+        state: 현재 상태.
+
+    Returns:
+        분기 키.
+    """
+
+    return "fallback" if state.get("error") else "continue"
+
+
+def _guard_selector(state: AgentState) -> str:
+    """
+    SQL 가드 실패 시 멀티스텝으로 폴백할지 결정한다.
+
+    Args:
+        state: 현재 상태.
+
+    Returns:
+        분기 키.
+    """
+
+    if not state.get("error"):
+        return "continue"
+
+    multi_step_plan = state.get("multi_step_plan")
+    if isinstance(multi_step_plan, dict) and multi_step_plan.get("execution_mode") == "single_sql":
+        return "fallback"
+
+    return "error"
+
+
+def _validate_selector(state: AgentState) -> str:
+    """
+    결과 검증 실패 시 멀티스텝으로 폴백할지 결정한다.
+
+    Args:
+        state: 현재 상태.
+
+    Returns:
+        분기 키.
+    """
+
+    if not state.get("error"):
+        return "continue"
+
+    multi_step_plan = state.get("multi_step_plan")
+    if isinstance(multi_step_plan, dict) and multi_step_plan.get("execution_mode") == "single_sql":
+        return "fallback"
+
+    return "error"
 
 
 def _error_selector(state: AgentState) -> str:
@@ -1481,10 +1696,16 @@ def _build_multi_step_plan_llm(
     if not sanitized_steps:
         return None
 
+    execution_mode = result.execution_mode or "multi_sql"
+    inferred_mode = _infer_execution_mode(sanitized_steps, result.combine)
+    if inferred_mode == "single_sql":
+        execution_mode = "single_sql"
+
     return {
         "steps": sanitized_steps,
         "combine": result.combine,
         "reason": result.reason,
+        "execution_mode": execution_mode,
     }
 
 
