@@ -408,14 +408,6 @@ def _get_user_id() -> str | None:
                 return str(value[0]) if value else None
             return str(value)
 
-    if hasattr(st, "experimental_get_query_params"):
-        params = st.experimental_get_query_params()
-        if "user_id" in params:
-            values = params.get("user_id")
-            if isinstance(values, list):
-                return str(values[0]) if values else None
-            return str(values)
-
     return None
 
 
