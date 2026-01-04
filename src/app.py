@@ -1,6 +1,7 @@
 # ruff: noqa: E402, I001
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,7 +17,30 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.agent.scene import build_scene, ChatbotScene
 from src.config import AppConfig, load_config
 from src.utils.logging import JsonlLogger
+from src.utils.markdown import records_to_markdown
 from src.utils.time import Timer
+
+
+COLUMN_LABELS = {
+    "team_name": "팀 이름",
+    "team_abbreviation": "팀 약어",
+    "team_abbreviation_home": "홈 팀",
+    "team_abbreviation_away": "원정 팀",
+    "season_year": "시즌",
+    "season_id": "시즌 ID",
+    "w": "승",
+    "l": "패",
+    "pct": "승률",
+    "avg_attendance": "평균 관중",
+    "total_attendance": "총 관중",
+    "game_count": "경기 수",
+    "player_name": "선수 이름",
+    "overall_pick": "전체 픽",
+    "game_date": "경기 날짜",
+    "pts": "득점",
+    "opp_pts": "실점",
+}
+
 
 
 def main() -> None:
@@ -30,11 +54,13 @@ def main() -> None:
     # 1) 설정/세션 초기화
     config = load_config()
     _init_session_state(config)
+    _apply_custom_theme()
 
     # 2) 사이드바 설정
     st.sidebar.header("설정")
-    st.sidebar.text(f"DB 경로: {config.db_path}")
+    st.sidebar.caption(f"DB: {config.db_path}")
 
+    st.sidebar.markdown("### 모델")
     model = st.sidebar.selectbox("모델", ["gpt-4o-mini"], index=0)
     temperature = st.sidebar.slider("Temperature", min_value=0.1, max_value=2.0, value=1.0, step=0.1)
 
@@ -43,12 +69,16 @@ def main() -> None:
     orchestrator = scene.orchestrator
     logger = JsonlLogger(config.log_path)
 
+    st.sidebar.divider()
+    st.sidebar.markdown("### 데이터")
     if st.sidebar.button("Dataset Info"):
         st.session_state.show_dataset_info = not st.session_state.show_dataset_info
 
     if st.session_state.show_dataset_info:
         _render_dataset_info(scene)
 
+    st.sidebar.divider()
+    st.sidebar.markdown("### 유틸")
     if st.sidebar.button("Dump Schema"):
         orchestrator.dump_schema()
         st.success("schema.json / schema.md 생성 완료")
@@ -63,11 +93,16 @@ def main() -> None:
         st.success("장기 메모리가 초기화되었습니다.")
 
     # 4) 대화 로그 렌더링
-    st.title("NBA NL2SQL 챗봇")
+    _render_hero()
+    quick_prompt = _render_quick_prompts()
     _render_messages(st.session_state.messages)
 
     # 5) 사용자 입력 처리
-    if user_text := st.chat_input("질문을 입력하세요"):
+    user_text = st.chat_input("질문을 입력하세요")
+    if quick_prompt and not user_text:
+        user_text = quick_prompt
+
+    if user_text:
         st.session_state.messages.append({"role": "user", "content": user_text})
         with st.chat_message("user"):
             st.write(user_text)
@@ -150,6 +185,56 @@ def _render_dataset_info(scene: ChatbotScene) -> None:
         st.markdown(f"**사용 가능한 지표**: {', '.join(metric_names)}")
 
 
+def _render_hero() -> None:
+    """
+    헤더 영역을 렌더링한다.
+
+    Returns:
+        None
+    """
+
+    st.markdown(
+        """
+<div class="hero">
+  <div class="hero-title">NBA NL2SQL 챗봇</div>
+  <div class="hero-subtitle">NBA 데이터 질의를 자연어로 입력하면 SQL 실행 결과와 요약을 제공합니다.</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_quick_prompts() -> str | None:
+    """
+    빠른 질문 버튼을 렌더링한다.
+
+    Returns:
+        선택된 질문(없으면 None).
+    """
+
+    prompts = [
+        ("2023-24 득점 Top10", "2023-24 시즌 팀 득점 상위 10개 보여줘"),
+        ("승률 상위 5팀", "최근 리그에서 승률 상위 5개 팀 알려줘"),
+        ("2018 드래프트", "2018 드래프트 전체 픽 리스트 보여줘"),
+        ("LAL 최근 5경기", "LAL 최근 5경기 결과 알려줘"),
+        ("관중 상위 팀 분석", "관중 수 상위 10개 팀의 시즌 승률/순위를 같이 보여줘"),
+        ("관중 Top10 + 순위", "관중 수 상위 10개 팀의 최근 리그 순위를 분석해줘"),
+        ("관중 Top5 + 승률", "관중 수 상위 5개 팀의 승률과 순위를 비교해줘"),
+        ("관중 Top10 + 성적", "관중 수 상위 10팀의 시즌 성적과 순위를 정리해줘"),
+        ("관중 상위 팀 승패", "관중 수 상위 10개 팀의 승패와 리그 순위를 알려줘"),
+        ("관중 상위 팀 요약", "관중 상위 10개 팀의 시즌 승률을 표로 보여줘"),
+    ]
+
+    st.markdown('<div class="section-label">추천 질의</div>', unsafe_allow_html=True)
+    selection: str | None = None
+    cols = st.columns(3)
+    for idx, (label, question) in enumerate(prompts):
+        with cols[idx % 3]:
+            if st.button(label, key=f"quick_prompt_{idx}"):
+                selection = question
+    return selection
+
+
 def _render_messages(messages: list[dict[str, object]]) -> None:
     """
     저장된 메시지를 렌더링.
@@ -184,13 +269,14 @@ def _render_messages(messages: list[dict[str, object]]) -> None:
 
             st.write(message["content"])
 
-            # if sql:
-            #     st.code(sql, language="sql")
             if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
-                # st.dataframe(dataframe, use_container_width=True)
+                _render_result_summary(dataframe, planned_slots)
+                display_df = _prepare_dataframe_for_display(dataframe, True)
+                if not _has_markdown_table(str(message.get("content", ""))):
+                    st.dataframe(display_df, use_container_width=True)
                 st.download_button(
                     "CSV 다운로드",
-                    dataframe.to_csv(index=False).encode("utf-8"),
+                    display_df.to_csv(index=False).encode("utf-8"),
                     file_name="result.csv",
                     mime="text/csv",
                     key=f"download_{idx}",
@@ -231,11 +317,17 @@ def _handle_agent_result(
     route_reason = result.get("route_reason")
     planned_slots = result.get("planned_slots")
 
+    display_df: pd.DataFrame | None = None
+    if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
+        display_df = _prepare_dataframe_for_display(dataframe, True)
+        table_markdown = _dataframe_to_markdown(display_df)
+        final_answer = _merge_markdown_table(final_answer, table_markdown)
+
     assistant_message = {
         "role": "assistant",
         "content": final_answer,
         "sql": sql,
-        "dataframe": dataframe,
+        "dataframe": display_df if display_df is not None else dataframe,
         "error": error,
         "error_detail": error_detail,
         "route": route,
@@ -258,13 +350,13 @@ def _handle_agent_result(
 
     st.write_stream(_stream_text(final_answer))
 
-    if sql:
-        st.code(sql, language="sql")
-    if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
-        st.dataframe(dataframe, use_container_width=True)
+    if isinstance(display_df, pd.DataFrame) and not display_df.empty:
+        _render_result_summary(display_df, planned_slots)
+        if not _has_markdown_table(str(final_answer)):
+            st.dataframe(display_df, use_container_width=True)
         st.download_button(
             "CSV 다운로드",
-            dataframe.to_csv(index=False).encode("utf-8"),
+            display_df.to_csv(index=False).encode("utf-8"),
             file_name="result.csv",
             mime="text/csv",
             key=f"download_{message_index}",
@@ -362,7 +454,8 @@ def _render_thinking_panel(
         None
     """
 
-    with st.expander("Thinking", expanded=False):
+    st.markdown('<span class="thinking-pill">Thinking</span>', unsafe_allow_html=True)
+    with st.expander("Details", expanded=False):
         steps = [
             ("Routing", bool(route)),
             ("Planning", bool(planned_slots)),
@@ -387,6 +480,151 @@ def _render_thinking_panel(
 
         if payload:
             st.json(payload, expanded=True)
+
+
+def _render_result_summary(dataframe: pd.DataFrame, planned_slots: dict[str, object] | None) -> None:
+    """
+    결과 요약 카드를 렌더링한다.
+
+    Args:
+        dataframe: 결과 데이터프레임.
+        planned_slots: 플래너 슬롯.
+
+    Returns:
+        None
+    """
+
+    planned_slots = planned_slots or {}
+    season = planned_slots.get("season") or "-"
+    metric = planned_slots.get("metric") or "-"
+    top_k = planned_slots.get("top_k") or "-"
+
+    cols = st.columns(4)
+    cols[0].metric("Rows", f"{len(dataframe):,}")
+    cols[1].metric("Season", str(season))
+    cols[2].metric("Metric", str(metric))
+    cols[3].metric("Top-K", str(top_k))
+
+    filters = planned_slots.get("filters")
+    if isinstance(filters, dict) and filters:
+        filters_text = ", ".join(f"{key}={value}" for key, value in filters.items())
+        st.caption(f"필터: {filters_text}")
+
+
+def _prepare_dataframe_for_display(dataframe: pd.DataFrame, use_friendly_columns: bool) -> pd.DataFrame:
+    """
+    화면 표시용 데이터프레임을 준비한다.
+
+    Args:
+        dataframe: 원본 데이터프레임.
+        use_friendly_columns: 컬럼명 변환 여부.
+
+    Returns:
+        표시용 데이터프레임.
+    """
+
+    if not use_friendly_columns:
+        return dataframe
+
+    rename_map = {col: COLUMN_LABELS.get(col, col) for col in dataframe.columns}
+    return dataframe.rename(columns=rename_map)
+
+
+def _dataframe_to_markdown(dataframe: pd.DataFrame) -> str:
+    """
+    데이터프레임을 마크다운 테이블로 변환한다.
+
+    Args:
+        dataframe: 결과 데이터프레임.
+
+    Returns:
+        마크다운 테이블 문자열.
+    """
+
+    records = dataframe.to_dict(orient="records")
+    return records_to_markdown(records)
+
+
+def _merge_markdown_table(text: str, table_markdown: str) -> str:
+    """
+    기존 답변에 마크다운 테이블을 주입하거나 교체한다.
+
+    Args:
+        text: 원본 응답 텍스트.
+        table_markdown: 교체할 테이블 문자열.
+
+    Returns:
+        테이블이 포함된 응답 텍스트.
+    """
+
+    lines = text.splitlines()
+    table_range = _find_markdown_table_range(lines)
+    if table_range:
+        start, end = table_range
+        merged = lines[:start] + table_markdown.splitlines() + lines[end:]
+        return "\n".join(merged).strip()
+
+    for idx, line in enumerate(lines):
+        if "📌 조회 결과" in line:
+            merged = lines[: idx + 1] + ["", table_markdown, ""] + lines[idx + 1 :]
+            return "\n".join(merged).strip()
+
+    return (text.rstrip() + "\n\n" + table_markdown).strip()
+
+
+def _find_markdown_table_range(lines: list[str]) -> tuple[int, int] | None:
+    """
+    마크다운 테이블 영역을 찾는다.
+
+    Args:
+        lines: 텍스트 라인 목록.
+
+    Returns:
+        (start, end) 범위 또는 None.
+    """
+
+    for idx in range(len(lines) - 1):
+        if "|" in lines[idx] and _is_markdown_separator(lines[idx + 1]):
+            end = idx + 2
+            while end < len(lines) and "|" in lines[end]:
+                end += 1
+            return idx, end
+    return None
+
+
+def _has_markdown_table(text: str) -> bool:
+    """
+    마크다운 테이블 포함 여부를 확인한다.
+
+    Args:
+        text: 응답 텍스트.
+
+    Returns:
+        테이블이 있으면 True.
+    """
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    for idx in range(len(lines) - 1):
+        if "|" in lines[idx] and _is_markdown_separator(lines[idx + 1]):
+            return True
+    return False
+
+
+def _is_markdown_separator(line: str) -> bool:
+    """
+    마크다운 테이블 구분선인지 확인한다.
+
+    Args:
+        line: 한 줄 문자열.
+
+    Returns:
+        구분선이면 True.
+    """
+
+    return bool(re.match(r"^\|?\s*[-:|\s]+\s*\|?$", line.strip()))
 
 
 def _get_user_id() -> str | None:
@@ -430,6 +668,82 @@ def _stream_text(text: str, chunk_size: int = 24) -> Iterator[str]:
 
     for offset in range(0, len(text), chunk_size):
         yield text[offset : offset + chunk_size]
+
+
+def _apply_custom_theme() -> None:
+    """
+    커스텀 UI 테마를 적용한다.
+
+    Returns:
+        None
+    """
+
+    st.markdown(
+        """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"] {
+  font-family: "Space Grotesk", sans-serif;
+}
+
+.stApp {
+  background: #f8fafc;
+}
+
+.hero {
+  padding: 0.5rem 0 0.2rem;
+}
+
+.hero-title {
+  font-size: 2.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+.hero-subtitle {
+  margin-top: 0.35rem;
+  font-size: 1.05rem;
+  color: #475569;
+}
+
+.section-label {
+  margin: 1.2rem 0 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.thinking-pill {
+  display: inline-block;
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.stButton>button {
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.35rem 0.9rem;
+}
+
+.stButton>button:hover {
+  border-color: #0f172a;
+  color: #0f172a;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":
