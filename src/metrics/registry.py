@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Any
 
 import yaml
+
 
 STOPWORDS = {
     "상위",
@@ -165,11 +166,23 @@ class MetricsRegistry:
         scored: list[tuple[int, MetricDefinition]] = []
         for metric in self._metrics:
             names = metric.all_names()
+            alias_text = " ".join(names).lower()
             alias_score = _alias_match_score(query, names)
-            haystack = " ".join(names + [metric.description_ko or "", metric.formula_ko or ""]).lower()
-            score = alias_score + _match_score(haystack, query, tokens)
-            if score > 0:
-                scored.append((score, metric))
+            alias_tokens = set(_tokenize(alias_text))
+            alias_token_score = len(alias_tokens.intersection(tokens)) * 2
+
+            if alias_score == 0 and alias_token_score == 0:
+                desc_text = " ".join([metric.description_ko or "", metric.formula_ko or ""]).lower()
+                desc_score = _match_score(desc_text, query, tokens)
+                if desc_score < 4:
+                    continue
+                score = desc_score
+            else:
+                desc_text = " ".join([metric.description_ko or "", metric.formula_ko or ""]).lower()
+                desc_score = _match_score(desc_text, query, tokens)
+                score = alias_score + alias_token_score + min(desc_score, 3)
+
+            scored.append((score, metric))
 
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
         return [metric for _, metric in scored[:limit]]

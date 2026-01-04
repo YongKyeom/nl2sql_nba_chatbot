@@ -121,12 +121,12 @@ def _extract_entity_type(text: str) -> Literal["player", "team", "game"] | None:
     """
 
     lowered = text.lower()
-    if "선수" in text or "player" in lowered:
+    if "팀" in text or "team" in lowered:
+        return "team"
+    if _has_player_hint(text):
         return "player"
     if "경기" in text or "game" in lowered:
         return "game"
-    if "팀" in text or "team" in lowered:
-        return "team"
     return None
 
 
@@ -275,6 +275,12 @@ def _build_clarify_question(
         확인 질문 또는 None.
     """
 
+    if slots.entity_type == "player" and _needs_player_game_logs(user_message):
+        return (
+            "현재 데이터에는 선수 경기 로그(월별/경기별 득점·출전시간·슛 성공률)가 없습니다. "
+            "선수 프로필/드래프트/컴바인 정보나 팀 단위 트렌드로 안내해드릴까요?"
+        )
+
     if slots.metric is None:
         return "어떤 지표를 조회할까요? 예: 승률, 득실차, TS%"
 
@@ -308,6 +314,71 @@ def _is_player_metric(metric_name: str | None, registry: MetricsRegistry) -> boo
 
     player_tables = {"common_player_info", "draft_history", "draft_combine_stats", "player", "inactive_players"}
     return any(table in player_tables for table in metric.required_tables)
+
+
+def _has_player_hint(text: str) -> bool:
+    """
+    선수 질의를 암시하는 키워드가 있는지 확인한다.
+
+    Args:
+        text: 사용자 입력.
+
+    Returns:
+        선수 관련 힌트가 있으면 True.
+    """
+
+    lowered = text.lower()
+    keywords = [
+        "선수",
+        "프로필",
+        "드래프트",
+        "컴바인",
+        "포지션",
+        "키",
+        "체중",
+        "나이",
+        "커리어",
+        "출전시간",
+        "출전 시간",
+        "슛 성공률",
+        "fg%",
+        "ts%",
+        "efg%",
+        "필드골",
+    ]
+    english_keywords = ["player", "profile", "draft", "combine", "minutes", "shooting", "field goal"]
+    return any(keyword in text for keyword in keywords) or any(keyword in lowered for keyword in english_keywords)
+
+
+def _needs_player_game_logs(text: str) -> bool:
+    """
+    선수 경기 로그 기반 요청인지 판단한다.
+
+    Args:
+        text: 사용자 입력.
+
+    Returns:
+        경기 로그 기반이면 True.
+    """
+
+    lowered = text.lower()
+    keywords = [
+        "월별",
+        "트렌드",
+        "추이",
+        "변화",
+        "정규시즌",
+        "플레이오프",
+        "출전시간",
+        "출전 시간",
+        "평균득점",
+        "평균 득점",
+        "슛 성공률",
+        "경기별",
+        "게임 로그",
+    ]
+    english_keywords = ["trend", "monthly", "playoffs", "regular season", "game log"]
+    return any(keyword in text for keyword in keywords) or any(keyword in lowered for keyword in english_keywords)
 
 
 if __name__ == "__main__":
