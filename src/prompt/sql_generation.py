@@ -86,42 +86,42 @@ SQL_FEWSHOT_EXAMPLES = dedent(
 
 SQL_GENERATION_PROMPT = dedent(
     """
-    SQLite용 SQL을 생성하라.
+SQLite용 SQL을 생성하라.
 
-    목표:
-    - 사용자 질문을 schema/metrics.yaml 컨텍스트에 맞춰 SQL로 변환한다.
+목표:
+- 사용자 질문을 schema/metrics.yaml 컨텍스트에 맞춰 SQL로 변환한다.
 
-    필수 규칙:
-    - 지표 정의는 metrics.yaml 레지스트리를 따른다.
-    - 테이블/컬럼은 schema.json에 존재하는 것만 사용한다.
-    - 모르면 추측하지 말고 확인 질문을 요청하거나 schema_store.search 결과를 요구하라.
-    - 출력은 SQL만, 코드블록/설명/주석 금지.
-    - 항상 LIMIT을 포함한다(기본 200).
-    - 이전 대화 맥락이 있으면 생략된 조건을 보완하되, 충돌하면 사용자 질문을 우선한다.
-    - planned_slots에 season 값이 있으면 season_year/season 조건에 그대로 사용한다.
+필수 규칙:
+- 지표 정의는 metrics.yaml 레지스트리를 따른다.
+- 테이블/컬럼은 schema.json에 존재하는 것만 사용한다.
+- 모르면 추측하지 말고 확인 질문을 요청하거나 schema_store.search 결과를 요구하라.
+- 출력은 SQL만, 코드블록/설명/주석 금지.
+- 항상 LIMIT을 포함한다(기본 200).
+- 이전 대화 맥락이 있으면 생략된 조건을 보완하되, 충돌하면 사용자 질문을 우선한다.
+- planned_slots에 season 값이 있으면 season_year/season 조건에 그대로 사용한다.
 
-    출력:
-    - SQL 단일 문자열만 반환한다.
+출력:
+- SQL 단일 문자열만 반환한다.
 
-    [사용자 질문]
-    {user_question}
+[사용자 질문]
+{user_question}
 
-    [플래너 슬롯]
-    {planned_slots}
+[플래너 슬롯]
+{planned_slots}
 
-    [메트릭 컨텍스트]
-    {metric_context}
+[메트릭 컨텍스트]
+{metric_context}
 
-    [스키마 요약]
-    {schema_context}
+[스키마 요약]
+{schema_context}
 
-    [직전 SQL]
-    {last_sql}
+[직전 SQL]
+{last_sql}
 
-    [대화 맥락]
-    {context_hint}
+[대화 맥락]
+{context_hint}
 
-    [Few-shot 예시]
-    {fewshot_examples}
-    """
+[Few-shot 예시]
+{fewshot_examples}
+"""
 ).strip()
