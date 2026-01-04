@@ -45,6 +45,7 @@ class ShortTermMemory:
     last_result_schema: list[str] | None = None
     last_slots: dict[str, Any] = field(default_factory=dict)
     last_route: str | None = None
+    last_entities: dict[str, list[str]] = field(default_factory=dict)
 
     turns: list[ConversationTurn] = field(default_factory=list)
     max_turns: int = 20
@@ -62,6 +63,7 @@ class ShortTermMemory:
         self.last_result_schema = None
         self.last_slots = {}
         self.last_route = None
+        self.last_entities = {}
         self.turns = []
 
     def start_turn(self, user_message: str) -> None:
@@ -125,6 +127,7 @@ class ShortTermMemory:
         self.last_result = dataframe
         self.last_result_schema = list(dataframe.columns)
         self.last_slots = slots
+        self.last_entities = _extract_entities_from_dataframe(dataframe)
 
     def update_route(self, route: str) -> None:
         """
@@ -138,6 +141,19 @@ class ShortTermMemory:
         """
 
         self.last_route = route
+
+    def update_entities_from_dataframe(self, dataframe: pd.DataFrame) -> None:
+        """
+        결과 데이터프레임에서 엔티티를 추출해 저장한다.
+
+        Args:
+            dataframe: 결과 데이터프레임.
+
+        Returns:
+            None
+        """
+
+        self.last_entities = _extract_entities_from_dataframe(dataframe)
 
     def build_recent_dialogue(self, *, limit: int = 4, max_chars_per_message: int = 180) -> str:
         """
@@ -444,6 +460,19 @@ class ConversationMemory:
 
         self.short_term.update_sql_result(sql, dataframe, slots)
 
+    def update_entities_from_dataframe(self, dataframe: pd.DataFrame) -> None:
+        """
+        결과 데이터프레임에서 엔티티를 추출해 저장한다.
+
+        Args:
+            dataframe: 결과 데이터프레임.
+
+        Returns:
+            None
+        """
+
+        self.short_term.update_entities_from_dataframe(dataframe)
+
     def update_route(self, route: str) -> None:
         """
         마지막 라우트를 저장한다.
@@ -515,6 +544,101 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 1] + "…"
+
+
+def _extract_entities_from_dataframe(dataframe: pd.DataFrame) -> dict[str, list[str]]:
+    """
+    데이터프레임에서 팀/선수 엔티티를 추출한다.
+
+    Args:
+        dataframe: 결과 데이터프레임.
+
+    Returns:
+        {"teams": [...], "players": [...]} 형태의 엔티티 딕셔너리.
+    """
+
+    if dataframe.empty:
+        return {}
+
+    team_candidates: set[str] = set()
+    player_candidates: set[str] = set()
+
+    team_cols = _find_team_columns(dataframe.columns)
+    for col in team_cols:
+        values = dataframe[col].dropna().astype(str).unique().tolist()
+        for value in values:
+            token = value.strip().upper()
+            if re.fullmatch(r"[A-Z]{2,3}", token):
+                team_candidates.add(token)
+
+    player_cols = _find_player_columns(dataframe.columns)
+    for col in player_cols:
+        values = dataframe[col].dropna().astype(str).unique().tolist()
+        for value in values:
+            name = value.strip()
+            if len(name) < 3:
+                continue
+            player_candidates.add(name)
+
+    entities: dict[str, list[str]] = {}
+    if team_candidates:
+        entities["teams"] = sorted(team_candidates)
+    if player_candidates:
+        entities["players"] = sorted(player_candidates)
+    return entities
+
+
+def _find_team_columns(columns: list[str]) -> list[str]:
+    """
+    팀 약어 컬럼 후보를 찾는다.
+
+    Args:
+        columns: 데이터프레임 컬럼 목록.
+
+    Returns:
+        팀 컬럼 리스트.
+    """
+
+    team_cols: list[str] = []
+    candidates = {
+        "team_abbreviation",
+        "team_abbreviation_home",
+        "team_abbreviation_away",
+        "team_a",
+        "team_b",
+        "opponent",
+    }
+    for col in columns:
+        lowered = col.lower()
+        if col in candidates or lowered.endswith("team_abbreviation"):
+            team_cols.append(col)
+    return team_cols
+
+
+def _find_player_columns(columns: list[str]) -> list[str]:
+    """
+    선수 이름 컬럼 후보를 찾는다.
+
+    Args:
+        columns: 데이터프레임 컬럼 목록.
+
+    Returns:
+        선수 컬럼 리스트.
+    """
+
+    player_cols: list[str] = []
+    candidates = {
+        "player_name",
+        "display_first_last",
+        "full_name",
+        "first_name",
+        "last_name",
+    }
+    for col in columns:
+        lowered = col.lower()
+        if col in candidates or "player" in lowered:
+            player_cols.append(col)
+    return player_cols
 
 
 def _extract_explicit_profile(user_message: str) -> dict[str, str]:

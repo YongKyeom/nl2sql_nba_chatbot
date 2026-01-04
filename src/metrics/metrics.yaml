@@ -163,11 +163,11 @@ metrics:
       WITH team_games AS (
         SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, wl_home AS wl
         FROM game
-        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season' {team_filter_home}
         UNION ALL
         SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, wl_away AS wl
         FROM game
-        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
+        WHERE season_id = '{season_id}' AND season_type = 'Regular Season' {team_filter_away}
       )
       SELECT team_name,
              team_abbreviation,
@@ -519,6 +519,43 @@ metrics:
       FROM game_info AS gi
       JOIN game AS g ON g.game_id = gi.game_id
       ORDER BY gi.attendance DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 1
+      min_minutes: null
+
+  - name: attendance_top_teams
+    aliases:
+      - "관중 수 상위 팀"
+      - "관중수 상위 팀"
+      - "관중 상위 팀"
+      - "관중 많은 팀"
+      - "관중수 많은 팀"
+      - "attendance teams"
+      - "attendance by team"
+    description_ko: "홈 경기 기준 평균 관중수가 높은 팀 목록이다."
+    formula_ko: "AVG(attendance) 기준 내림차순"
+    required_tables: ["game_info", "game"]
+    required_columns: ["game_id", "attendance", "season_id", "team_abbreviation_home", "team_name_home"]
+    sql_template: |
+      WITH team_attendance AS (
+        SELECT g.season_id,
+               g.team_abbreviation_home AS team_abbreviation,
+               g.team_name_home AS team_name,
+               gi.attendance AS attendance
+        FROM game_info AS gi
+        JOIN game AS g ON g.game_id = gi.game_id
+        WHERE gi.attendance IS NOT NULL
+      )
+      SELECT team_name,
+             team_abbreviation,
+             ROUND(AVG(attendance), 0) AS avg_attendance,
+             SUM(attendance) AS total_attendance,
+             COUNT(*) AS game_count
+      FROM team_attendance
+      WHERE season_id = '{season_id}'
+      GROUP BY team_abbreviation, team_name
+      ORDER BY avg_attendance DESC
       LIMIT {limit};
     cut_rules:
       min_games: 1

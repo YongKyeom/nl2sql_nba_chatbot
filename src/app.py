@@ -306,7 +306,6 @@ def _run_agent_with_thinking(scene: ChatbotScene, user_message: str) -> dict[str
                 continue
             final_state = state
             with placeholder.container():
-                st.caption("Thinking...")
                 _render_thinking_panel(
                     route=state.get("route"),
                     route_reason=state.get("route_reason"),
@@ -324,7 +323,6 @@ def _run_agent_with_thinking(scene: ChatbotScene, user_message: str) -> dict[str
         return scene.ask(user_message)
 
     with placeholder.container():
-        st.caption("Thinking 완료")
         _render_thinking_panel(
             route=final_state.get("route"),
             route_reason=final_state.get("route_reason"),

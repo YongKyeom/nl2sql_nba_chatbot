@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,7 +89,7 @@ class SQLGuard:
         if join_errors:
             return GuardResult(False, sql, join_errors, warnings)
 
-        safe_sql = _ensure_limit(expression, self._row_limit)
+        safe_sql = _ensure_limit(expression, self._row_limit, sql)
         return GuardResult(True, safe_sql, errors, warnings)
 
 
@@ -191,13 +192,14 @@ def _validate_joins(expression: exp.Expression) -> list[str]:
     return errors
 
 
-def _ensure_limit(expression: exp.Expression, row_limit: int) -> str:
+def _ensure_limit(expression: exp.Expression, row_limit: int, raw_sql: str) -> str:
     """
     LIMIT을 강제한다.
 
     Args:
         expression: SQL AST.
         row_limit: 최대 행 제한.
+        raw_sql: 원본 SQL 문자열.
 
     Returns:
         LIMIT이 반영된 SQL 문자열.
@@ -207,9 +209,40 @@ def _ensure_limit(expression: exp.Expression, row_limit: int) -> str:
     if isinstance(expression, exp.With) and expression.this is not None:
         target = expression.this
 
-    if target.args.get("limit") is None:
-        target.set("limit", exp.Limit(this=exp.Literal.number(row_limit)))
-    return expression.sql(dialect="sqlite")
+    normalized = _normalize_sql(raw_sql)
+    if target.args.get("limit") is not None:
+        return normalized
+    if _has_limit_keyword(normalized):
+        return normalized
+    return f"{normalized} LIMIT {row_limit}"
+
+
+def _normalize_sql(sql: str) -> str:
+    """
+    SQL 문자열의 기본 정규화를 수행한다.
+
+    Args:
+        sql: 원본 SQL 문자열.
+
+    Returns:
+        정규화된 SQL 문자열.
+    """
+
+    return sql.strip().rstrip(";")
+
+
+def _has_limit_keyword(sql: str) -> bool:
+    """
+    LIMIT 키워드 포함 여부를 확인한다.
+
+    Args:
+        sql: SQL 문자열.
+
+    Returns:
+        LIMIT 키워드가 있으면 True.
+    """
+
+    return bool(re.search(r"\\blimit\\b", sql, re.IGNORECASE))
 
 
 if __name__ == "__main__":

@@ -144,6 +144,13 @@ def _extract_season(text: str) -> str | None:
     match = re.search(r"(20\d{2}\s*[-/\.]\s*\d{2})", text)
     if match:
         return match.group(1).replace(" ", "")
+
+    short_match = re.search(r"\b(\d{2})\s*[-/\.]\s*(\d{2})\b", text)
+    if short_match:
+        start_year = int(short_match.group(1))
+        end_year = int(short_match.group(2))
+        if 0 <= start_year <= 99 and 0 <= end_year <= 99:
+            return f"20{start_year:02d}-{end_year:02d}"
     return None
 
 

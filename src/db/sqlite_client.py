@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,18 +124,38 @@ def enforce_limit(sql: str, row_limit: int) -> str:
         sqlglot 파싱 실패 시 단순 문자열 검사로 보정한다.
     """
 
+    normalized = sql.strip().rstrip(";")
     try:
-        expression = sqlglot.parse_one(sql, read="sqlite")
+        expression = sqlglot.parse_one(normalized, read="sqlite")
         if expression is None:
-            return sql
-        if expression.args.get("limit") is None:
-            expression.set("limit", exp.Limit(this=exp.Literal.number(row_limit)))
-        return expression.sql(dialect="sqlite")
-    except sqlglot.ParseError:
-        normalized = sql.strip().rstrip(";")
-        if " limit " in normalized.lower():
+            return _append_limit_if_missing(normalized, row_limit)
+
+        target = expression
+        if isinstance(expression, exp.With) and expression.this is not None:
+            target = expression.this
+
+        if target.args.get("limit") is not None:
             return normalized
-        return f"{normalized} LIMIT {row_limit}"
+        return _append_limit_if_missing(normalized, row_limit)
+    except sqlglot.ParseError:
+        return _append_limit_if_missing(normalized, row_limit)
+
+
+def _append_limit_if_missing(sql: str, row_limit: int) -> str:
+    """
+    LIMIT이 없으면 추가한다.
+
+    Args:
+        sql: SQL 문자열.
+        row_limit: 최대 행 제한.
+
+    Returns:
+        LIMIT이 반영된 SQL 문자열.
+    """
+
+    if re.search(r"\\blimit\\b", sql, re.IGNORECASE):
+        return sql
+    return f"{sql} LIMIT {row_limit}"
 
 
 def preview_dataframe(dataframe: pd.DataFrame, max_rows: int = 200) -> list[dict[str, Any]]:
