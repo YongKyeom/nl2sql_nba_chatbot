@@ -10,6 +10,10 @@ NBA SQLite DB를 기반으로 NL2SQL 에이전트를 제공하는 프로젝트�
 - SQL Guard로 SELECT-only를 강제하고, 품질 검증/재시도를 통해 안정성을 높입니다.
 - 이전 결과 재사용(정렬/필터/Top-K)과 일반 안내 답변도 지원합니다.
 
+## 데이터 출처
+
+- Kaggle: https://www.kaggle.com/datasets/wyattowalsh/basketball
+
 ## 환경 설정
 
 `.env` 파일에 API 키를 설정합니다(실제 키는 노출하지 마세요).
