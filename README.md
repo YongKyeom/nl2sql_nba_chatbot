@@ -50,7 +50,8 @@ NBA SQLite DB를 기반으로 NL2SQL 에이전트를 제공하는 프로젝트�
 
 ```
 OPENAI_API_KEY=YOUR_KEY_HERE
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-4.1-mini
+FINAL_ANSWER_MODEL=gpt-4.1-nano
 OPENAI_TEMPERATURE=0.2
 DB_PATH=data/nba.sqlite
 MEMORY_DB_PATH=result/memory.sqlite
@@ -77,7 +78,8 @@ streamlit run src/app.py
 
 ## Streamlit UI
 
-- 모델: `gpt-4o-mini` 고정(선택형 UI 유지)
+- 모델: `gpt-4.1-mini` 기본값, `gpt-4.1-nano`/`gpt-4o-mini` 선택 가능
+- 최종 답변 모델: `FINAL_ANSWER_MODEL`로 고정(기본 `gpt-4.1-nano`)
 - Temperature: 0.1 ~ 2.0
 - Dataset Info: 데이터셋 요약/출처/테이블/지표 목록 표시
 - 추천 질의: 클릭으로 빠른 질문 실행

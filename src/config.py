@@ -15,7 +15,8 @@ class AppConfig:
 
     Args:
         db_path: SQLite DB 경로.
-        model: 사용할 LLM 모델명.
+        model: 사용할 LLM 모델명(라우팅/SQL 생성용).
+        final_answer_model: 최종 답변 생성에 사용할 모델명.
         temperature: LLM temperature.
         schema_json_path: 스키마 JSON 경로.
         schema_md_path: 스키마 Markdown 경로.
@@ -27,6 +28,7 @@ class AppConfig:
 
     db_path: Path
     model: str
+    final_answer_model: str
     temperature: float
     schema_json_path: Path
     schema_md_path: Path
@@ -47,7 +49,8 @@ def load_config() -> AppConfig:
     load_dotenv()
 
     db_path = Path(os.getenv("DB_PATH", "data/nba.sqlite"))
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    final_answer_model = os.getenv("FINAL_ANSWER_MODEL", "gpt-4.1-nano")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     memory_db_path = Path(os.getenv("MEMORY_DB_PATH", "result/memory.sqlite"))
     chat_db_path = Path(os.getenv("CHAT_DB_PATH", "result/chat.sqlite"))
@@ -56,6 +59,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         db_path=db_path,
         model=model,
+        final_answer_model=final_answer_model,
         temperature=temperature,
         schema_json_path=Path("result/schema.json"),
         schema_md_path=Path("result/schema.md"),

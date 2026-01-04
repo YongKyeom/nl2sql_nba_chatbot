@@ -29,7 +29,8 @@ class OrchestratorOptions:
     오케스트레이터 동작 옵션.
 
     Args:
-        model: 사용할 LLM 모델명.
+        model: 사용할 LLM 모델명(라우팅/SQL 생성용).
+        final_answer_model: 최종 답변 생성 모델명.
         temperature: SQL 생성 temperature.
         router_temperature: 라우터 temperature.
         responder_temperature: 답변 생성 temperature.
@@ -38,6 +39,7 @@ class OrchestratorOptions:
 
     model: str
     temperature: float
+    final_answer_model: str | None = None
     router_temperature: float = 0.0
     responder_temperature: float = 0.2
     summarizer_temperature: float = 0.2
@@ -75,6 +77,8 @@ class AgentOrchestrator:
         self._options: OrchestratorOptions = resolved_options
         self.memory: ConversationMemory = memory or ConversationMemory.persistent(config.memory_db_path)
 
+        final_answer_model = resolved_options.final_answer_model or config.final_answer_model
+
         # 1) 레지스트리/스키마 준비
         self.registry: MetricsRegistry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
         self.registry.ensure_loaded()
@@ -96,7 +100,7 @@ class AgentOrchestrator:
             schema_store=self.schema_store,
             router=RouterLLM(model=resolved_options.model, temperature=resolved_options.router_temperature),
             responder=Responder(
-                ResponderConfig(model=resolved_options.model, temperature=resolved_options.responder_temperature)
+                ResponderConfig(model=final_answer_model, temperature=resolved_options.responder_temperature)
             ),
             planner=Planner(self.registry),
             fewshot_generator=FewshotGenerator(model=resolved_options.model, temperature=0.2),
@@ -105,7 +109,7 @@ class AgentOrchestrator:
             guard=SQLGuard(config.schema_json_path),
             validator=ResultValidator(),
             sqlite_client=SQLiteClient(config.db_path),
-            summarizer=Summarizer(model=resolved_options.model, temperature=resolved_options.summarizer_temperature),
+            summarizer=Summarizer(model=final_answer_model, temperature=resolved_options.summarizer_temperature),
             memory=self.memory,
         )
 

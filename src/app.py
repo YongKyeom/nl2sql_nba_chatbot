@@ -122,7 +122,10 @@ class StreamlitChatApp:
         st.sidebar.caption(f"DB: {self._config.db_path}")
 
         st.sidebar.markdown("### 모델")
-        model = st.sidebar.selectbox("모델", ["gpt-4o-mini"], index=0)
+        model_options = ["gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o-mini"]
+        default_model = self._config.model
+        default_index = model_options.index(default_model) if default_model in model_options else 0
+        model = st.sidebar.selectbox("모델", model_options, index=default_index)
         temperature = st.sidebar.slider("Temperature", min_value=0.1, max_value=2.0, value=1.0, step=0.1)
 
         scene = self._ensure_scene(model, temperature)
@@ -215,7 +218,11 @@ class StreamlitChatApp:
         if "scene" not in st.session_state:
             st.session_state.scene = None
         if st.session_state.scene is None:
-            st.session_state.scene = build_scene(self._config, model="gpt-4o-mini", temperature=0.2)
+            st.session_state.scene = build_scene(
+                self._config,
+                model=self._config.model,
+                temperature=self._config.temperature,
+            )
         if "messages" not in st.session_state:
             st.session_state.messages = []
         if "show_dataset_info" not in st.session_state:
