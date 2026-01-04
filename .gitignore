@@ -1,6 +1,7 @@
-# README.md를 제외한 모든 마크다운 파일 무시
+# 마크다운 파일 무시
 *.md
 !README.md
+!schema.md
 
 # datasets
 data/**
