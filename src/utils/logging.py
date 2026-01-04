@@ -19,6 +19,7 @@ class LogEvent:
         rows: 결과 행 수(없으면 None).
         latency_ms: 처리 지연 시간(ms).
         error: 오류 메시지(없으면 None).
+        user_id: 사용자 식별자(없으면 None).
     """
 
     timestamp: str
@@ -28,6 +29,7 @@ class LogEvent:
     rows: int | None
     latency_ms: float | None
     error: str | None
+    user_id: str | None = None
 
 
 class JsonlLogger:
@@ -56,6 +58,7 @@ class JsonlLogger:
         rows: int | None,
         latency_ms: float | None,
         error: str | None,
+        user_id: str | None = None,
     ) -> None:
         """
         이벤트를 JSONL로 기록.
@@ -80,8 +83,12 @@ class JsonlLogger:
             rows=rows,
             latency_ms=latency_ms,
             error=error,
+            user_id=user_id,
         )
-        self._append_json(event.__dict__)
+        payload = dict(event.__dict__)
+        if payload.get("user_id") is None:
+            payload.pop("user_id", None)
+        self._append_json(payload)
 
     def _append_json(self, payload: dict[str, object]) -> None:
         """

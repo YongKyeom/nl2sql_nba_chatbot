@@ -281,6 +281,7 @@ def _handle_agent_result(
         rows=int(len(dataframe)) if isinstance(dataframe, pd.DataFrame) else None,
         latency_ms=latency_ms,
         error=error if isinstance(error, str) else None,
+        user_id=_get_user_id(),
     )
 
 
@@ -385,6 +386,37 @@ def _render_thinking_panel(
 
         if payload:
             st.json(payload, expanded=True)
+
+
+def _get_user_id() -> str | None:
+    """
+    가능한 범위에서 사용자 식별자를 추출한다.
+
+    Returns:
+        사용자 ID(없으면 None).
+    """
+
+    user_id = st.session_state.get("user_id")
+    if user_id:
+        return str(user_id)
+
+    if hasattr(st, "query_params"):
+        params = st.query_params
+        if "user_id" in params:
+            value = params.get("user_id")
+            if isinstance(value, list):
+                return str(value[0]) if value else None
+            return str(value)
+
+    if hasattr(st, "experimental_get_query_params"):
+        params = st.experimental_get_query_params()
+        if "user_id" in params:
+            values = params.get("user_id")
+            if isinstance(values, list):
+                return str(values[0]) if values else None
+            return str(values)
+
+    return None
 
 
 if __name__ == "__main__":

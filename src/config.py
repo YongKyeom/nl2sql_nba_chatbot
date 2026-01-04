@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -52,6 +53,6 @@ def load_config() -> AppConfig:
         temperature=temperature,
         schema_json_path=Path("result/schema.json"),
         schema_md_path=Path("result/schema.md"),
-        log_path=Path("result/log.jsonl"),
+        log_path=Path("log") / f"log_{datetime.now().strftime('%Y%m%d')}.json",
         memory_db_path=memory_db_path,
     )
