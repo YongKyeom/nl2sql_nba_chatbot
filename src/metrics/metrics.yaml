@@ -3,6 +3,8 @@ metrics:
     aliases:
       - "트리플더블"
       - "트리플 더블"
+      - "트리블더블"  # 오타감안
+      - "트리블 더블"  # 오타감안
       - "트리더"
       - "3더블"
       - "triple double"
@@ -122,6 +124,7 @@ metrics:
       - "effective fg%"
       - "유효 야투"
       - "유효 야투율"
+      - "유효 야투률"
       - "이펙티브 필드골"
     description_ko: "팀 경기 합계 기준의 유효 야투율이다. 3점 슛 가치를 가중치로 반영한다."
     formula_ko: "eFG% = (FGM + 0.5 * FG3M) / FGA"
@@ -185,6 +188,7 @@ metrics:
 
   - name: team_win_pct_by_season
     aliases:
+      - "시즌 성적"
       - "시즌별 성적"
       - "시즌별 승률"
       - "시즌별 성적 비교"
@@ -232,8 +236,11 @@ metrics:
   - name: point_diff
     aliases:
       - "득실차"
+      - "득실 차"
       - "평균 득실차"
+      - "평균 득실 차"
       - "점수차"
+      - "점수 차"
       - "point differential"
       - "point diff"
       - "score diff"
@@ -330,6 +337,7 @@ metrics:
 
   - name: top_scorers
     aliases:
+      - "상위 득점"
       - "득점 상위"
       - "득점 TOP"
       - "득점 순위"
@@ -338,6 +346,9 @@ metrics:
       - "points leaders"
       - "top scorers"
       - "팀 득점 상위"
+      - "상위 팀 득점"
+      - "상위 득점 팀"
+      - "상위 득점팀"
     description_ko: "시즌 팀 평균 득점(PTS/경기) 상위 팀 목록이다. 선수 데이터가 없으므로 팀 단위로 제공한다."
     formula_ko: "팀 평균 득점 PTS/경기 기준 내림차순"
     required_tables: ["game"]
@@ -366,6 +377,7 @@ metrics:
 
   - name: top_rebounders
     aliases:
+      - "상위 리바운드"
       - "리바운드 상위"
       - "리바운드 TOP"
       - "리바운드 순위"
@@ -373,6 +385,7 @@ metrics:
       - "reb leaders"
       - "top rebounders"
       - "팀 리바운드 상위"
+      - "상위 팀 리바운드"
     description_ko: "시즌 팀 평균 리바운드 상위 팀 목록이다."
     formula_ko: "팀 평균 리바운드 REB/경기 기준 내림차순"
     required_tables: ["game"]
@@ -401,6 +414,7 @@ metrics:
 
   - name: top_assisters
     aliases:
+      - "상위 어시스트"
       - "어시스트 상위"
       - "어시스트 TOP"
       - "어시스트 순위"
@@ -408,6 +422,7 @@ metrics:
       - "assist leaders"
       - "top assisters"
       - "팀 어시스트 상위"
+      - "상위 팀 어시스트"
     description_ko: "시즌 팀 평균 어시스트 상위 팀 목록이다."
     formula_ko: "팀 평균 어시스트 AST/경기 기준 내림차순"
     required_tables: ["game"]
@@ -442,6 +457,7 @@ metrics:
       - "home away split"
       - "home/away split"
       - "홈 원정 비교"
+      - "홈원정 비교"
       - "홈/원정 비교"
     description_ko: "팀의 홈/원정 평균 득점, 리바운드, 어시스트를 비교한다."
     formula_ko: "홈/원정 구분 후 평균값 계산"
@@ -666,6 +682,8 @@ metrics:
 
   - name: second_chance_points
     aliases:
+      - "세컨찬스"
+      - "세컨 찬스"
       - "세컨드찬스"
       - "세컨드 찬스"
       - "세컨드찬스 득점"
