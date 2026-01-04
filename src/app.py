@@ -137,8 +137,10 @@ def _render_dataset_info(scene: ChatbotScene) -> None:
     with st.sidebar.expander("데이터셋 상세 설명", expanded=True):
         st.markdown(
             """
-- 데이터는 SQLite 로컬 DB에서 읽기 전용으로 조회합니다.
+- 데이터 출처: Kaggle (wyattowalsh/basketball)
+- 원본 CSV를 SQLite로 적재해 읽기 전용으로 조회합니다.
 - 팀 경기 스탯이 중심이며, 선수 단위는 프로필/드래프트/컴바인 정보 위주입니다.
+- 정규시즌/플레이오프는 season_type 기준으로 구분됩니다.
 - 선수 맞대결은 play_by_play 이벤트 동시 관여 빈도로 근사합니다.
 - 지표 정의는 metrics.yaml에서 주입되며, 변경 즉시 반영됩니다.
 """
