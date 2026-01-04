@@ -83,10 +83,16 @@ REUSE_KEYWORDS = ["방금", "이전", "정렬", "상위", "내림", "오름", "�
 PREVIOUS_REF_KEYWORDS = ["방금", "이전", "그 결과", "그거", "다시", "재정렬", "필터", "제외", "바꿔", "줄여", "늘려"]
 GENERAL_KEYWORDS = [
     "안녕",
+    "ㅎㅇ",
+    "ㅎㅇㅇ",
+    "안뇽",
+    "하이",
     "hello",
     "hi",
     "도움",
     "도움말",
+    "도와",
+    "도움줘",
     "사용법",
     "사용 방법",
     "가이드",
@@ -94,10 +100,22 @@ GENERAL_KEYWORDS = [
     "기능",
     "할 수",
     "할수",
+    "할 수 있",
+    "할수있",
+    "가능해",
     "가능한",
     "무슨 일",
     "무엇을 할 수",
     "어떤 일",
+    "어떤 걸",
+    "누구",
+    "누구야",
+    "누구냐",
+    "너는",
+    "너 뭐",
+    "너 뭐야",
+    "알려줄 수",
+    "해줄 수",
     "무슨 데이터",
     "어떤 데이터",
     "데이터 알려",
@@ -150,6 +168,8 @@ class RouterLLM:
         """
 
         metric_name = _detect_metric(context.user_message, registry)
+        if _is_general_question(context.user_message):
+            return RouterResult(route=Route.GENERAL, metric_name=None, reason="일반 안내 질문 감지")
 
         try:
             prompt = ROUTER_PROMPT.format(
