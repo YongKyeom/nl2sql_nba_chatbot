@@ -11,6 +11,9 @@ data/**
 # 차트 이미지
 result/plot/
 
+# 로그 파일
+log/*.log
+
 # 테스트 폴더 무시
 src/test/
 
