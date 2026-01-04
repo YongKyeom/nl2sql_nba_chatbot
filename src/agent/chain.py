@@ -9,7 +9,12 @@ import pandas as pd
 from langgraph.graph import END, StateGraph
 
 from src.agent.contextualizer import build_context_hint
-from src.agent.fewshot_generator import FewshotGenerationInput, FewshotGenerator
+from src.agent.fewshot_generator import (
+    FewshotGenerationInput,
+    FewshotGenerator,
+    SchemaSelectionInput,
+    SchemaSelectionResult,
+)
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
 from src.agent.planner import Planner, PlannerOutput, PlannerSlots
@@ -39,6 +44,7 @@ class AgentState(TypedDict, total=False):
     clarify_question: str | None
     multi_step_plan: MultiStepPlan | None
     fewshot_examples: str | None
+    schema_context: str | None
     sql: str | None
     result_df: pd.DataFrame | None
     last_result_schema: list[str] | None
@@ -392,6 +398,19 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         deps.registry,
         limit=deps.fewshot_candidate_limit,
     )
+    full_schema_context = deps.schema_store.build_full_context(max_columns=12)
+    selection = deps.fewshot_generator.select_schema(
+        SchemaSelectionInput(
+            user_question=user_message,
+            planned_slots=planned_slots,
+            candidate_metrics=candidate_metrics,
+            schema_context=full_schema_context,
+            context_hint=build_context_hint(deps.memory),
+        )
+    )
+    schema_context = _build_schema_context_from_selection(selection, deps.schema_store)
+    if not schema_context:
+        schema_context = _build_schema_context_for_metrics(candidate_metrics, deps.schema_store)
 
     try:
         fewshot_examples = deps.fewshot_generator.generate_examples(
@@ -399,7 +418,7 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
                 user_question=user_message,
                 planned_slots=planned_slots,
                 candidate_metrics=candidate_metrics,
-                schema_context=deps.schema_store.build_context(),
+                schema_context=schema_context,
                 context_hint=build_context_hint(deps.memory),
                 target_count=target_count,
             )
@@ -407,7 +426,7 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     except Exception:  # noqa: BLE001
         return {}
 
-    return {"fewshot_examples": fewshot_examples}
+    return {"fewshot_examples": fewshot_examples, "schema_context": schema_context}
 
 
 def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
@@ -442,7 +461,7 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
                 user_question=state["user_message"],
                 planned_slots=slots,
                 metric_context=deps.registry.build_sql_context(metric),
-                schema_context=deps.schema_store.build_context(),
+                schema_context=state.get("schema_context") or deps.schema_store.build_context(),
                 last_sql=deps.memory.last_sql,
                 context_hint=build_context_hint(deps.memory),
                 fewshot_examples=state.get("fewshot_examples"),
@@ -1266,6 +1285,78 @@ def _collect_candidate_metrics(
         add_metric(metric.name)
 
     return collected[: max(limit, 0)]
+
+
+def _build_schema_context_for_metrics(
+    candidate_metrics: list[dict[str, Any]],
+    schema_store: SchemaStore,
+) -> str:
+    """
+    메트릭 후보에 필요한 테이블 스키마만 요약한다.
+
+    Args:
+        candidate_metrics: 후보 메트릭 컨텍스트 리스트.
+        schema_store: 스키마 스토어.
+
+    Returns:
+        스키마 요약 문자열.
+    """
+
+    tables: list[str] = []
+    required_columns: set[str] = set()
+
+    for metric in candidate_metrics:
+        for table in metric.get("required_tables", []):
+            if table not in tables:
+                tables.append(table)
+        for column in metric.get("required_columns", []):
+            if isinstance(column, str) and column:
+                required_columns.add(column)
+
+    columns_by_table: dict[str, list[str]] = {}
+    for table in tables:
+        table_info = schema_store.get_table(table)
+        if not table_info:
+            continue
+        available = [col["name"] for col in table_info["columns"]]
+        filtered = [col for col in available if col in required_columns]
+        if filtered:
+            columns_by_table[table] = filtered
+
+    context = schema_store.build_context_for_tables(tables, columns_by_table, max_columns=12)
+    if not context:
+        context = schema_store.build_context(max_tables=6, max_columns=12)
+
+    return "\n".join(["[필요 테이블 스키마]", context, "---"])
+
+
+def _build_schema_context_from_selection(
+    selection: SchemaSelectionResult,
+    schema_store: SchemaStore,
+) -> str:
+    """
+    LLM 선별 결과로 스키마 요약을 구성한다.
+
+    Args:
+        selection: 스키마 선별 결과.
+        schema_store: 스키마 스토어.
+
+    Returns:
+        스키마 요약 문자열.
+    """
+
+    if not selection.tables:
+        return ""
+
+    context = schema_store.build_context_for_tables(
+        selection.tables,
+        selection.columns_by_table,
+        max_columns=12,
+    )
+    if not context:
+        return ""
+
+    return "\n".join(["[필요 테이블 스키마]", context, "---"])
 
 
 def _metrics_for_multi_step(plan: MultiStepPlan) -> list[str]:

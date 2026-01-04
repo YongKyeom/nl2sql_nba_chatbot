@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent.chain import AgentDependencies, build_agent_chain
+from src.agent.fewshot_generator import SchemaSelectionResult
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
 from src.agent.planner import Planner
@@ -166,6 +167,19 @@ class DummyFewshotGenerator:
         """
 
         return SQL_FEWSHOT_EXAMPLES
+
+    def select_schema(self, payload: Any) -> Any:
+        """
+        스키마 선별을 비워 반환한다.
+
+        Args:
+            payload: 스키마 선별 입력.
+
+        Returns:
+            빈 선별 결과.
+        """
+
+        return SchemaSelectionResult(tables=[], columns_by_table={}, reason=None)
 
 
 class DummySummarizer:

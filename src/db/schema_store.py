@@ -195,6 +195,58 @@ class SchemaStore:
 
         return "\n".join(lines)
 
+    def build_context_for_tables(
+        self,
+        table_names: list[str],
+        columns_by_table: dict[str, list[str]] | None = None,
+        *,
+        max_columns: int = 12,
+    ) -> str:
+        """
+        특정 테이블만 포함한 스키마 요약 문자열을 생성.
+
+        Args:
+            table_names: 포함할 테이블 목록.
+            columns_by_table: 테이블별로 제한할 컬럼 목록(없으면 전체).
+            max_columns: 테이블당 포함할 최대 컬럼 수.
+
+        Returns:
+            스키마 요약 문자열.
+        """
+
+        self.ensure_loaded()
+        lines: list[str] = []
+
+        for table_name in table_names:
+            table_info = self._schema.get(table_name)
+            if not table_info:
+                continue
+
+            available = [col["name"] for col in table_info["columns"]]
+            if columns_by_table and columns_by_table.get(table_name):
+                filtered = [col for col in available if col in columns_by_table[table_name]]
+                columns = filtered[:max_columns] if filtered else available[:max_columns]
+            else:
+                columns = available[:max_columns]
+
+            lines.append(f"- {table_name}: {', '.join(columns)}")
+
+        return "\n".join(lines)
+
+    def build_full_context(self, *, max_columns: int = 12) -> str:
+        """
+        모든 테이블을 포함한 스키마 요약 문자열을 생성.
+
+        Args:
+            max_columns: 테이블당 포함할 최대 컬럼 수.
+
+        Returns:
+            스키마 요약 문자열.
+        """
+
+        self.ensure_loaded()
+        return self.build_context_for_tables(self.list_tables(), max_columns=max_columns)
+
 
 def _match_score(target: str, query: str) -> int:
     """

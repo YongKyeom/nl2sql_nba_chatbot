@@ -593,6 +593,7 @@ class StreamlitChatApp:
                 last_result_schema = message.get("last_result_schema")
                 sql = message.get("sql")
                 fewshot_examples = message.get("fewshot_examples")
+                schema_context = message.get("schema_context")
 
                 if message["role"] == "assistant" and (
                     route or route_reason or planned_slots or last_result_schema or multi_step_plan
@@ -605,6 +606,7 @@ class StreamlitChatApp:
                         last_result_schema=last_result_schema,
                         sql=sql,
                         fewshot_examples=fewshot_examples,
+                        schema_context=schema_context,
                         message_index=idx,
                     )
 
@@ -691,6 +693,7 @@ class StreamlitChatApp:
         planned_slots = result.get("planned_slots")
         multi_step_plan = result.get("multi_step_plan")
         fewshot_examples = result.get("fewshot_examples")
+        schema_context = result.get("schema_context")
 
         display_df: pd.DataFrame | None = None
         chart_spec: ChartSpec | None = None
@@ -728,6 +731,7 @@ class StreamlitChatApp:
             "multi_step_plan": multi_step_plan,
             "last_result_schema": result.get("last_result_schema"),
             "fewshot_examples": fewshot_examples,
+            "schema_context": schema_context,
         }
         st.session_state.messages.append(assistant_message)
         message_index = len(st.session_state.messages) - 1
@@ -744,6 +748,7 @@ class StreamlitChatApp:
             "chart_image_path": chart_image_path,
             "fewshot_examples": fewshot_examples,
             "multi_step_plan": multi_step_plan,
+            "schema_context": schema_context,
         }
         if isinstance(display_df, pd.DataFrame):
             chat_meta["dataframe_records"] = display_df.to_dict(orient="records")
@@ -766,6 +771,7 @@ class StreamlitChatApp:
                 last_result_schema=result.get("last_result_schema"),
                 sql=sql,
                 fewshot_examples=fewshot_examples,
+                schema_context=schema_context,
                 message_index=message_index,
             )
 
@@ -847,6 +853,7 @@ class StreamlitChatApp:
                         last_result_schema=state.get("last_result_schema"),
                         sql=state.get("sql"),
                         fewshot_examples=state.get("fewshot_examples"),
+                        schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
                     )
         except Exception:
@@ -866,6 +873,7 @@ class StreamlitChatApp:
                 last_result_schema=final_state.get("last_result_schema"),
                 sql=final_state.get("sql"),
                 fewshot_examples=final_state.get("fewshot_examples"),
+                schema_context=final_state.get("schema_context"),
                 message_index=len(st.session_state.messages),
             )
 
@@ -881,6 +889,7 @@ class StreamlitChatApp:
         last_result_schema: list[str] | None,
         sql: str | None,
         fewshot_examples: str | None,
+        schema_context: str | None,
         message_index: int,
     ) -> None:
         """
@@ -894,6 +903,7 @@ class StreamlitChatApp:
             last_result_schema: 직전 결과 스키마.
             sql: 생성/실행 SQL.
             fewshot_examples: few-shot 예시 문자열.
+            schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
 
         Side Effects:
@@ -905,40 +915,37 @@ class StreamlitChatApp:
 
         st.markdown('<span class="thinking-pill">Thinking</span>', unsafe_allow_html=True)
         with st.expander("Details", expanded=False):
-            steps = [
-                ("Routing", bool(route)),
-                ("Planning", bool(planned_slots)),
-            ]
-            if multi_step_plan:
-                steps.append(("Multi-step", True))
-            if fewshot_examples:
-                steps.append(("Few-shot", True))
-            else:
-                steps.append(("Few-shot", False))
-            steps.append(("SQL", bool(sql)))
-            for label, done in steps:
-                icon = "✅" if done else "⏳"
-                st.markdown(f"- {icon} {label}")
+            def _render_step(label: str, data: dict[str, object]) -> None:
+                with st.expander(f"✅ {label}", expanded=False):
+                    st.json(data, expanded=True)
 
-            if route_reason:
-                st.caption(f"route_reason: {route_reason}")
-
-            payload: dict[str, object] = {}
             if route:
-                payload["route"] = route
-            if planned_slots:
-                payload["planned_slots"] = planned_slots
-            if multi_step_plan:
-                payload["multi_step_plan"] = multi_step_plan
-            if last_result_schema:
-                payload["last_result_schema"] = last_result_schema
-            if fewshot_examples:
-                payload["fewshot_examples"] = fewshot_examples
-            if sql:
-                payload["sql"] = sql
+                _render_step("Routing", {"route": route, "route_reason": route_reason})
+            else:
+                st.markdown("- ⏳ Routing")
 
-            if payload:
-                st.json(payload, expanded=True)
+            if planned_slots:
+                _render_step("Planning", {"planned_slots": planned_slots})
+            else:
+                st.markdown("- ⏳ Planning")
+
+            if multi_step_plan:
+                _render_step("Multi-step", {"multi_step_plan": multi_step_plan})
+
+            if schema_context:
+                _render_step("선별된 스키마", {"schema_context": schema_context})
+            else:
+                st.markdown("- ⏳ 선별된 스키마")
+
+            if fewshot_examples:
+                _render_step("Few-shot", {"fewshot_examples": fewshot_examples})
+            else:
+                st.markdown("- ⏳ Few-shot")
+
+            if sql:
+                _render_step("SQL", {"sql": sql})
+            else:
+                st.markdown("- ⏳ SQL")
 
     def _render_result_summary(self, dataframe: pd.DataFrame, planned_slots: dict[str, object] | None) -> None:
         """

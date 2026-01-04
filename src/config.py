@@ -54,7 +54,7 @@ def load_config() -> AppConfig:
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     memory_db_path = Path(os.getenv("MEMORY_DB_PATH", "result/memory.sqlite"))
     chat_db_path = Path(os.getenv("CHAT_DB_PATH", "result/chat.sqlite"))
-    fewshot_candidate_limit = int(os.getenv("FEWSHOT_CANDIDATE_LIMIT", "5"))
+    fewshot_candidate_limit = int(os.getenv("FEWSHOT_CANDIDATE_LIMIT", "3"))
 
     return AppConfig(
         db_path=db_path,

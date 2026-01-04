@@ -169,9 +169,10 @@ python -m unittest -q src.test.test_chain_unit
 
 1. 기본 예시는 `src/prompt/sql_generation.py`의 `SQL_FEWSHOT_EXAMPLES`에서 관리합니다.
 2. 런타임에는 `FewshotGenerator`가 사용자 질문과 후보 메트릭을 기반으로 few-shot을 동적으로 생성합니다.
-3. `FEWSHOT_CANDIDATE_LIMIT` 환경 변수로 후보 sql_template 개수를 조절할 수 있습니다(기본값 5).
-4. 예시에 쓰는 테이블/컬럼은 `result/schema.json`에 존재해야 합니다.
-5. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`도 함께 보강합니다.
+3. `FewshotGenerator`는 LLM으로 필요한 테이블/컬럼을 먼저 선별해 스키마 컨텍스트를 축소합니다(실패 시 룰 기반 폴백).
+4. `FEWSHOT_CANDIDATE_LIMIT` 환경 변수로 후보 sql_template 개수를 조절할 수 있습니다(기본값 3).
+5. 예시에 쓰는 테이블/컬럼은 `result/schema.json`에 존재해야 합니다.
+6. 특정 지표의 정확도를 높이려면 `src/metrics/metrics.yaml`의 `aliases`와 `sql_template`도 함께 보강합니다.
 
 예시 추가 패턴:
 ```
