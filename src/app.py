@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import re
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.agent.scene import ChatbotScene, build_scene
 from src.agent.title_generator import TitleGenerator
+from src.chart.generator import ChartGenerator
+from src.chart.renderer import ChartRenderer
+from src.chart.types import ChartSpec, SUPPORTED_CHART_TYPES
 from src.config import AppConfig, load_config
 from src.db.chat_store import ChatSession, ChatStore
 from src.utils.logging import JsonlLogger
@@ -125,6 +129,8 @@ class StreamlitChatApp:
         orchestrator = scene.orchestrator
         logger = JsonlLogger(self._config.log_path)
         title_generator = self._ensure_title_generator(model)
+        chart_generator = self._ensure_chart_generator(model)
+        chart_renderer = self._ensure_chart_renderer()
 
         # 4) 채팅 전환 처리: 선택된 채팅의 메시지와 메모리를 복원한다.
         if selected_chat_id != st.session_state.loaded_chat_id:
@@ -160,7 +166,7 @@ class StreamlitChatApp:
         # 6) 메인 화면: 헤더와 추천 질의를 보여준다.
         self._render_hero()
         quick_prompt = self._render_quick_prompts()
-        self._render_messages(st.session_state.messages)
+        self._render_messages(st.session_state.messages, chart_renderer=chart_renderer)
 
         # 7) 입력 처리: 질문 저장 -> 실행 -> 결과 반영 순서로 처리한다.
         user_text = st.chat_input("질문을 입력하세요")
@@ -183,6 +189,8 @@ class StreamlitChatApp:
                     timer.elapsed_ms,
                     logger,
                     user_text,
+                    chart_generator=chart_generator,
+                    chart_renderer=chart_renderer,
                     chat_store=chat_store,
                     user_id=user_id,
                     chat_id=st.session_state.active_chat_id,
@@ -216,6 +224,10 @@ class StreamlitChatApp:
             st.session_state.chat_store = None
         if "title_generator" not in st.session_state:
             st.session_state.title_generator = None
+        if "chart_generator" not in st.session_state:
+            st.session_state.chart_generator = None
+        if "chart_renderer" not in st.session_state:
+            st.session_state.chart_renderer = None
         if "chat_sessions" not in st.session_state:
             st.session_state.chat_sessions = []
         if "active_chat_id" not in st.session_state:
@@ -290,6 +302,47 @@ class StreamlitChatApp:
             st.session_state.title_generator = TitleGenerator(model=model, temperature=0.2)
         return st.session_state.title_generator
 
+    def _ensure_chart_generator(self, model: str) -> ChartGenerator:
+        """
+        차트 생성기를 세션에 준비한다.
+
+        Args:
+            model: 사용할 모델명.
+
+        Returns:
+            ChartGenerator.
+
+        Side Effects:
+            st.session_state.chart_generator를 갱신할 수 있다.
+
+        Raises:
+            예외 없음.
+        """
+
+        generator = st.session_state.chart_generator
+        if generator is None or generator.model != model:
+            st.session_state.chart_generator = ChartGenerator(model=model, temperature=0.2)
+        return st.session_state.chart_generator
+
+    def _ensure_chart_renderer(self) -> ChartRenderer:
+        """
+        차트 렌더러를 세션에 준비한다.
+
+        Returns:
+            ChartRenderer.
+
+        Side Effects:
+            st.session_state.chart_renderer를 갱신할 수 있다.
+
+        Raises:
+            예외 없음.
+        """
+
+        renderer = st.session_state.chart_renderer
+        if renderer is None:
+            st.session_state.chart_renderer = ChartRenderer()
+        return st.session_state.chart_renderer
+
     def _ensure_active_chat(self, chat_store: ChatStore, user_id: str) -> str:
         """
         활성 채팅을 확보한다.
@@ -363,7 +416,7 @@ class StreamlitChatApp:
 
         selected = active_chat_id
         for session in sessions:
-            cols = st.sidebar.columns([9, 1])
+            cols = st.sidebar.columns([10, 1])
             prefix = "●" if session.chat_id == active_chat_id else "○"
             label = f"{prefix} {session.title}"
             if cols[0].button(label, key=f"chat_select_{session.chat_id}", use_container_width=True):
@@ -396,9 +449,9 @@ class StreamlitChatApp:
         with column:
             menu_factory = getattr(st, "popover", None)
             if menu_factory:
-                menu = menu_factory("⋮", use_container_width=True)
+                menu = menu_factory("⋯", use_container_width=False)
             else:
-                menu = st.expander("⋮", expanded=False)
+                menu = st.expander("⋯", expanded=False)
 
         with menu:
             new_title = st.text_input(
@@ -503,12 +556,13 @@ class StreamlitChatApp:
                     selection = question
         return selection
 
-    def _render_messages(self, messages: list[dict[str, object]]) -> None:
+    def _render_messages(self, messages: list[dict[str, object]], *, chart_renderer: ChartRenderer) -> None:
         """
         저장된 메시지를 렌더링한다.
 
         Args:
             messages: 메시지 리스트.
+            chart_renderer: 차트 렌더러.
 
         Side Effects:
             대화 로그를 화면에 표시한다.
@@ -516,6 +570,9 @@ class StreamlitChatApp:
         Raises:
             예외 없음.
         """
+
+        current_user_id = str(st.session_state.get("user_id") or DEFAULT_USER_ID)
+        active_chat_id = str(st.session_state.get("active_chat_id") or "unknown")
 
         for idx, message in enumerate(messages):
             with st.chat_message(message["role"]):
@@ -538,7 +595,23 @@ class StreamlitChatApp:
                         message_index=idx,
                     )
 
-                st.write(message["content"])
+                chart_spec = message.get("chart_spec")
+                chart_image_path = message.get("chart_image_path")
+                if chart_spec and isinstance(dataframe, pd.DataFrame):
+                    rendered_path = self._render_answer_with_chart(
+                        str(message["content"]),
+                        dataframe,
+                        chart_spec,
+                        user_id=current_user_id,
+                        chat_id=active_chat_id,
+                        chart_image_path=chart_image_path if isinstance(chart_image_path, str) else None,
+                        chart_renderer=chart_renderer,
+                        stream=False,
+                    )
+                    if rendered_path and not chart_image_path:
+                        message["chart_image_path"] = rendered_path
+                else:
+                    st.markdown(str(message["content"]))
 
                 if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
                     self._render_result_summary(dataframe, planned_slots)
@@ -566,6 +639,8 @@ class StreamlitChatApp:
         logger: JsonlLogger,
         user_text: str,
         *,
+        chart_generator: ChartGenerator,
+        chart_renderer: ChartRenderer,
         chat_store: ChatStore,
         user_id: str,
         chat_id: str,
@@ -579,6 +654,8 @@ class StreamlitChatApp:
             latency_ms: 처리 시간.
             logger: 로그 기록기.
             user_text: 사용자 입력.
+            chart_generator: 차트 생성기.
+            chart_renderer: 차트 렌더러.
             chat_store: 채팅 저장소.
             user_id: 사용자 ID.
             chat_id: 채팅 ID.
@@ -601,16 +678,33 @@ class StreamlitChatApp:
         planned_slots = result.get("planned_slots")
 
         display_df: pd.DataFrame | None = None
+        chart_spec: ChartSpec | None = None
+        chart_image_path: str | None = None
         if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
             display_df = self._prepare_dataframe_for_display(dataframe, True)
             table_markdown = self._dataframe_to_markdown(display_df)
             final_answer = self._merge_markdown_table(str(final_answer), table_markdown)
+
+            if self._is_chart_request(user_text):
+                chart_spec = self._build_chart_spec(user_text, display_df, chart_generator)
+                if chart_spec:
+                    final_answer = self._ensure_chart_section(final_answer)
+                    chart_result = chart_renderer.prepare_chart_image(
+                        display_df,
+                        chart_spec,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        existing_path=None,
+                    )
+                    chart_image_path = chart_result.path
 
         assistant_message = {
             "role": "assistant",
             "content": final_answer,
             "sql": sql,
             "dataframe": display_df if display_df is not None else dataframe,
+            "chart_spec": chart_spec,
+            "chart_image_path": chart_image_path,
             "error": error,
             "error_detail": error_detail,
             "route": route,
@@ -629,6 +723,8 @@ class StreamlitChatApp:
             "error": error,
             "error_detail": error_detail,
             "last_result_schema": result.get("last_result_schema"),
+            "chart_spec": chart_spec,
+            "chart_image_path": chart_image_path,
         }
         if isinstance(display_df, pd.DataFrame):
             chat_meta["dataframe_records"] = display_df.to_dict(orient="records")
@@ -652,7 +748,19 @@ class StreamlitChatApp:
                 message_index=message_index,
             )
 
-        st.write_stream(self._stream_text(str(final_answer)))
+        if chart_spec and isinstance(display_df, pd.DataFrame):
+            self._render_answer_with_chart(
+                str(final_answer),
+                display_df,
+                chart_spec,
+                user_id=user_id,
+                chat_id=chat_id,
+                chart_image_path=chart_image_path,
+                chart_renderer=chart_renderer,
+                stream=True,
+            )
+        else:
+            st.write_stream(self._stream_text(str(final_answer)))
 
         if isinstance(display_df, pd.DataFrame) and not display_df.empty:
             self._render_result_summary(display_df, planned_slots)
@@ -824,6 +932,339 @@ class StreamlitChatApp:
             filters_text = ", ".join(f"{key}={value}" for key, value in filters.items())
             st.caption(f"필터: {filters_text}")
 
+    def _render_answer_with_chart(
+        self,
+        text: str,
+        dataframe: pd.DataFrame,
+        chart_spec: ChartSpec,
+        *,
+        user_id: str,
+        chat_id: str,
+        chart_image_path: str | None,
+        chart_renderer: ChartRenderer,
+        stream: bool,
+    ) -> str | None:
+        """
+        차트를 포함해 응답을 렌더링한다.
+
+        Args:
+            text: 응답 텍스트.
+            dataframe: 결과 데이터프레임.
+            chart_spec: 차트 스펙.
+            user_id: 사용자 ID.
+            chat_id: 채팅 ID.
+            chart_image_path: 저장된 차트 이미지 경로(있으면 재사용).
+            chart_renderer: 차트 렌더러.
+            stream: 스트리밍 여부.
+
+        Returns:
+            사용한 차트 이미지 경로(없으면 None).
+
+        Side Effects:
+            차트와 텍스트를 순서대로 출력한다. 필요 시 이미지를 저장한다.
+
+        Raises:
+            예외 없음.
+        """
+
+        pre, post = self._split_chart_text(text)
+        if pre.strip():
+            if stream:
+                st.write_stream(self._stream_text(pre))
+            else:
+                st.markdown(pre)
+
+        st.markdown("📊 차트")
+        image_path = self._render_chart(
+            dataframe,
+            chart_spec,
+            user_id=user_id,
+            chat_id=chat_id,
+            chart_image_path=chart_image_path,
+            chart_renderer=chart_renderer,
+        )
+
+        if post.strip():
+            if stream:
+                st.write_stream(self._stream_text(post))
+            else:
+                st.markdown(post)
+
+        return image_path
+
+    def _render_chart(
+        self,
+        dataframe: pd.DataFrame,
+        chart_spec: ChartSpec,
+        *,
+        user_id: str,
+        chat_id: str,
+        chart_image_path: str | None,
+        chart_renderer: ChartRenderer,
+    ) -> str | None:
+        """
+        차트 스펙에 따라 그래프를 렌더링한다.
+
+        Args:
+            dataframe: 결과 데이터프레임.
+            chart_spec: 차트 스펙.
+            user_id: 사용자 ID.
+            chat_id: 채팅 ID.
+            chart_image_path: 저장된 차트 이미지 경로(있으면 재사용).
+            chart_renderer: 차트 렌더러.
+
+        Returns:
+            사용한 차트 이미지 경로(없으면 None).
+
+        Side Effects:
+            차트를 Streamlit에 출력하고, 이미지 파일을 저장할 수 있다.
+
+        Raises:
+            예외 없음.
+        """
+
+        result = chart_renderer.prepare_chart_image(
+            dataframe,
+            chart_spec,
+            user_id=user_id,
+            chat_id=chat_id,
+            existing_path=chart_image_path,
+        )
+        if result.error == "path":
+            st.caption("차트 저장 경로를 만들 수 없습니다.")
+            return None
+        if result.path is None:
+            st.caption("차트를 그릴 수 있는 수치형 데이터가 없습니다.")
+            return None
+
+        st.image(result.path, use_container_width=True)
+        return result.path
+
+    def _is_chart_request(self, text: str) -> bool:
+        """
+        차트/그래프 요청인지 판별한다.
+
+        Args:
+            text: 사용자 질문.
+
+        Returns:
+            차트 요청이면 True.
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        lowered = text.lower()
+        keywords = [
+            "그래프",
+            "차트",
+            "시각화",
+            "히스토그램",
+            "박스플롯",
+            "박스 플롯",
+            "plot",
+            "chart",
+            "histogram",
+            "boxplot",
+            "box plot",
+            "visualize",
+            "visualization",
+        ]
+        return any(keyword in lowered for keyword in keywords)
+
+    def _build_chart_spec(
+        self,
+        user_text: str,
+        dataframe: pd.DataFrame,
+        chart_generator: ChartGenerator,
+    ) -> ChartSpec | None:
+        """
+        LLM과 규칙 기반으로 차트 스펙을 생성한다.
+
+        Args:
+            user_text: 사용자 질문.
+            dataframe: 결과 데이터프레임.
+            chart_generator: 차트 생성기.
+
+        Returns:
+            차트 스펙 딕셔너리(불가 시 None).
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        numeric_columns = dataframe.select_dtypes(include="number").columns.tolist()
+        if not numeric_columns:
+            return None
+
+        columns = list(dataframe.columns)
+        sample_records = dataframe.head(5).to_dict(orient="records")
+        try:
+            spec = chart_generator.generate(
+                user_question=user_text,
+                columns=columns,
+                numeric_columns=numeric_columns,
+                sample_records=str(sample_records),
+            )
+        except Exception:
+            spec = {}
+
+        normalized = self._normalize_chart_spec(spec or {}, dataframe)
+        if normalized:
+            return normalized
+        return self._fallback_chart_spec(dataframe)
+
+    def _normalize_chart_spec(self, spec: dict[str, Any], dataframe: pd.DataFrame) -> ChartSpec | None:
+        """
+        차트 스펙을 정규화한다.
+
+        Args:
+            spec: 원본 스펙.
+            dataframe: 결과 데이터프레임.
+
+        Returns:
+            정규화된 스펙 또는 None.
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        chart_type = str(spec.get("chart_type", "")).lower()
+        if chart_type == "none":
+            return None
+        if chart_type not in SUPPORTED_CHART_TYPES:
+            return None
+
+        x = spec.get("x")
+        y = spec.get("y")
+
+        if chart_type == "histogram":
+            candidate = x if x in dataframe.columns else y
+            if candidate not in dataframe.columns:
+                return None
+            if not pd.api.types.is_numeric_dtype(dataframe[candidate]):
+                return None
+            return {"chart_type": chart_type, "x": candidate, "y": candidate}
+
+        if chart_type == "box":
+            candidate = y if y in dataframe.columns else x
+            if candidate not in dataframe.columns:
+                return None
+            if not pd.api.types.is_numeric_dtype(dataframe[candidate]):
+                return None
+            normalized: dict[str, object] = {"chart_type": chart_type, "y": candidate}
+            if x in dataframe.columns:
+                normalized["x"] = x
+            return normalized
+
+        if x not in dataframe.columns or y not in dataframe.columns:
+            return None
+        if not pd.api.types.is_numeric_dtype(dataframe[y]):
+            return None
+
+        normalized = {"chart_type": chart_type, "x": x, "y": y}
+        series = spec.get("series")
+        if series in dataframe.columns:
+            normalized["series"] = series
+        return normalized
+
+    def _fallback_chart_spec(self, dataframe: pd.DataFrame) -> ChartSpec | None:
+        """
+        안전한 기본 차트 스펙을 생성한다.
+
+        Args:
+            dataframe: 결과 데이터프레임.
+
+        Returns:
+            차트 스펙 또는 None.
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        numeric_columns = dataframe.select_dtypes(include="number").columns.tolist()
+        if not numeric_columns:
+            return None
+
+        y = numeric_columns[0]
+        candidate_x = [col for col in dataframe.columns if col not in numeric_columns]
+        x = candidate_x[0] if candidate_x else dataframe.columns[0]
+
+        chart_type = "bar"
+        if any(token in str(x).lower() for token in ["date", "day", "season", "year"]):
+            chart_type = "line"
+
+        return {"chart_type": chart_type, "x": x, "y": y}
+
+    def _ensure_chart_section(self, text: str) -> str:
+        """
+        응답 텍스트에 차트 섹션을 주입한다.
+
+        Args:
+            text: 원본 응답 텍스트.
+
+        Returns:
+            차트 섹션이 포함된 텍스트.
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        if "📊 차트" in text:
+            return text
+
+        lines = text.splitlines()
+        table_range = self._find_markdown_table_range(lines)
+        if table_range:
+            start, end = table_range
+            merged = lines[:end] + ["", "📊 차트", ""] + lines[end:]
+            return "\n".join(merged).strip()
+
+        for idx, line in enumerate(lines):
+            if "📌 조회 결과" in line:
+                merged = lines[: idx + 1] + ["", "📊 차트", ""] + lines[idx + 1 :]
+                return "\n".join(merged).strip()
+
+        return (text.rstrip() + "\n\n📊 차트\n").strip()
+
+    def _split_chart_text(self, text: str) -> tuple[str, str]:
+        """
+        차트 섹션 기준으로 텍스트를 분할한다.
+
+        Args:
+            text: 원본 텍스트.
+
+        Returns:
+            (차트 이전, 차트 이후) 튜플.
+
+        Side Effects:
+            None
+
+        Raises:
+            예외 없음.
+        """
+
+        if "📊 차트" not in text:
+            return text, ""
+
+        before, after = text.split("📊 차트", maxsplit=1)
+        return before.rstrip(), after.lstrip()
+
     def _prepare_dataframe_for_display(self, dataframe: pd.DataFrame, use_friendly_columns: bool) -> pd.DataFrame:
         """
         화면 표시용 데이터프레임을 준비한다.
@@ -970,19 +1411,20 @@ class StreamlitChatApp:
 
         return bool(re.match(r"^\|?\s*[-:|\s]+\s*\|?$", line.strip()))
 
-    def _stream_text(self, text: str, chunk_size: int = 24) -> Iterator[str]:
+    def _stream_text(self, text: str, chunk_size: int = 24, delay_sec: float = 0.01) -> Iterator[str]:
         """
         텍스트를 일정 크기씩 나눠 스트리밍용 청크로 반환한다.
 
         Args:
             text: 원본 텍스트.
             chunk_size: 한 번에 출력할 문자 수.
+            delay_sec: 청크 사이 대기 시간.
 
         Yields:
             텍스트 청크.
 
         Side Effects:
-            None
+            delay_sec이 0보다 크면 지연을 발생시킨다.
 
         Raises:
             예외 없음.
@@ -994,6 +1436,8 @@ class StreamlitChatApp:
 
         for offset in range(0, len(text), chunk_size):
             yield text[offset : offset + chunk_size]
+            if delay_sec > 0:
+                time.sleep(delay_sec)
 
     def _apply_custom_theme(self) -> None:
         """
@@ -1084,6 +1528,30 @@ html, body, [class*="css"] {
 .stButton>button:hover {
   border-color: #0f172a;
   color: #0f172a;
+}
+
+section[data-testid="stSidebar"] {
+  background: #f1f5f9;
+  border-right: 1px solid #e2e8f0;
+}
+
+section[data-testid="stSidebar"] .stButton>button {
+  justify-content: flex-start;
+  text-align: left;
+  padding-left: 0.9rem;
+  padding-right: 0.9rem;
+}
+
+section[data-testid="stSidebar"] .stButton>button span {
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+section[data-testid="stSidebar"] button {
+  border-radius: 16px;
 }
 </style>
             """,

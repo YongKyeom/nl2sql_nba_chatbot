@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlglot import parse_one
 
@@ -20,6 +22,45 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.agent.memory import ConversationMemory
 from src.agent.scene import build_scene, ChatbotScene
 from src.config import AppConfig, load_config
+
+
+class _Tee:
+    """
+    두 개의 스트림에 동시에 출력하는 간단한 Tee.
+
+    Args:
+        streams: 출력 대상 스트림 목록.
+    """
+
+    def __init__(self, *streams: Any) -> None:
+        """
+        Tee 출력기를 초기화한다.
+
+        Args:
+            streams: 출력 대상 스트림 목록.
+        """
+
+        self._streams = streams
+
+    def write(self, data: str) -> None:
+        """
+        데이터를 모든 스트림에 기록한다.
+
+        Args:
+            data: 출력 문자열.
+        """
+
+        for stream in self._streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self) -> None:
+        """
+        모든 스트림을 플러시한다.
+        """
+
+        for stream in self._streams:
+            stream.flush()
 
 
 def run_live_query(query: str, *, scene: ChatbotScene) -> dict[str, object]:
@@ -113,13 +154,20 @@ def _format_sql(sql: str) -> str:
 
 
 if __name__ == "__main__":
-    # 1) 테스트 질의 정의
+    # 1) 로그 파일을 준비한다.
+    log_dir = Path("log")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    log_path = log_dir / f"test_agent_flow_{timestamp}.log"
+
+    # 2) 테스트 질의 정의
     querys: list[str] = [
         "안녕? 넌 어떤 일을 할 수 있어?",
         "무슨 데이터를 알려줄 수 있어?",
         "TS% 정의 알려줘",
         "최근 리그에서 승률 상위 5개 팀이 어디인 지 알려줘",
         "상위 3개만",
+        "Golden State Warriors의 시즌별 성적을 비교분석해줘",
         "2023-24 시즌 팀 득점 상위 10개 보여줘",
         "2018 드래프트 전체 픽 리스트 보여줘",
         "드래프트 1픽 평균 커리어 길이 알려줘",
@@ -129,12 +177,23 @@ if __name__ == "__main__":
         "LeBron James vs Stephen Curry 플레이바이플레이 이벤트 빈도 알려줘",
     ]
 
-    # 2) 대화 메모리/Scene 초기화(멀티턴 유지)
+    # 3) 대화 메모리/Scene 초기화(멀티턴 유지)
     config = load_config()
     scene = _build_scene(config)
 
-    # 3) 반복 실행
-    for query in querys:
-        result = run_live_query(query, scene=scene)
-        _print_result(query, result)
-    print()
+    # 4) 콘솔과 로그 파일에 동시에 출력한다.
+    with log_path.open("w", encoding="utf-8") as log_file:
+        tee_stdout = _Tee(sys.stdout, log_file)
+        tee_stderr = _Tee(sys.stderr, log_file)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        try:
+            sys.stdout = tee_stdout
+            sys.stderr = tee_stderr
+            for query in querys:
+                result = run_live_query(query, scene=scene)
+                _print_result(query, result)
+            print()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr

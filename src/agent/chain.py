@@ -317,8 +317,10 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     planned_slots = plan_output.slots.model_dump()
     _fill_recent_season(planned_slots, state["user_message"], deps.sqlite_client)
     _normalize_season(planned_slots, deps.sqlite_client)
-    _apply_default_season(planned_slots, state["user_message"], deps)
     _apply_reference_filters(planned_slots, state["user_message"], deps.memory)
+    _apply_team_name_filter(planned_slots, state["user_message"], deps.sqlite_client)
+    _override_season_comparison(planned_slots, state["user_message"])
+    _apply_default_season(planned_slots, state["user_message"], deps)
     _override_attendance_metric(planned_slots, state["user_message"])
     multi_step_plan = _build_multi_step_plan(state["user_message"], planned_slots)
 
@@ -827,6 +829,206 @@ def _apply_reference_filters(
         planned_slots["metric"] = "win_pct"
 
 
+def _apply_team_name_filter(
+    planned_slots: dict[str, Any],
+    user_message: str,
+    sqlite_client: SQLiteClient,
+) -> None:
+    """
+    팀 이름 기반 필터를 보강한다.
+
+    Args:
+        planned_slots: 플래너 슬롯.
+        user_message: 사용자 질문.
+        sqlite_client: SQLite 클라이언트.
+
+    Returns:
+        None
+    """
+
+    filters = planned_slots.get("filters", {})
+    if not isinstance(filters, dict):
+        filters = {}
+
+    lowered = user_message.lower()
+    team_catalog = _fetch_team_catalog(sqlite_client)
+    if not team_catalog:
+        return
+
+    abbreviations = {row["abbreviation"] for row in team_catalog if row.get("abbreviation")}
+    tokens = re.findall(r"\\b[A-Za-z]{2,3}\\b", user_message)
+    for token in tokens:
+        token_upper = token.upper()
+        if token_upper in abbreviations:
+            filters["team_abbreviation"] = token_upper
+            filters["team_abbreviation_in"] = [token_upper]
+            planned_slots["filters"] = filters
+            planned_slots["entity_type"] = "team"
+            return
+
+    matched_abbreviation = _match_team_name(lowered, team_catalog)
+    if matched_abbreviation:
+        filters["team_abbreviation"] = matched_abbreviation
+        filters["team_abbreviation_in"] = [matched_abbreviation]
+        planned_slots["filters"] = filters
+        planned_slots["entity_type"] = "team"
+        return
+
+    if _has_team_reference(user_message):
+        return
+
+    for key in ("team_abbreviation", "team_abbreviation_in", "team_a", "team_b"):
+        filters.pop(key, None)
+    planned_slots["filters"] = filters
+
+
+def _fetch_team_catalog(sqlite_client: SQLiteClient) -> list[dict[str, str]]:
+    """
+    팀 이름/약어 목록을 조회한다.
+
+    Args:
+        sqlite_client: SQLite 클라이언트.
+
+    Returns:
+        팀 메타 리스트.
+    """
+
+    sql = "SELECT full_name, abbreviation, nickname, city FROM team"
+    try:
+        result = sqlite_client.execute(sql)
+    except Exception:
+        return []
+
+    records: list[dict[str, str]] = []
+    for record in result.dataframe.to_dict(orient="records"):
+        records.append(
+            {
+                "full_name": str(record.get("full_name") or ""),
+                "abbreviation": str(record.get("abbreviation") or "").upper(),
+                "nickname": str(record.get("nickname") or ""),
+                "city": str(record.get("city") or ""),
+            }
+        )
+    return records
+
+
+def _match_team_name(message_lowered: str, catalog: list[dict[str, str]]) -> str | None:
+    """
+    사용자 문장에서 팀 이름을 찾아 약어로 반환한다.
+
+    Args:
+        message_lowered: 사용자 질문(lower).
+        catalog: 팀 메타 목록.
+
+    Returns:
+        팀 약어 또는 None.
+    """
+
+    best_match: tuple[int, str] | None = None
+    for row in catalog:
+        abbreviation = row.get("abbreviation")
+        if not abbreviation:
+            continue
+
+        candidates = []
+        full_name = row.get("full_name")
+        nickname = row.get("nickname")
+        city = row.get("city")
+        if full_name:
+            candidates.append(full_name)
+        if nickname:
+            candidates.append(nickname)
+        if city and nickname:
+            candidates.append(f"{city} {nickname}")
+
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            if candidate_lower and candidate_lower in message_lowered:
+                length = len(candidate_lower)
+                if best_match is None or length > best_match[0]:
+                    best_match = (length, abbreviation)
+
+    return best_match[1] if best_match else None
+
+
+def _override_season_comparison(planned_slots: dict[str, Any], user_message: str) -> None:
+    """
+    시즌별 성적 비교 질의를 보정한다.
+
+    Args:
+        planned_slots: 플래너 슬롯.
+        user_message: 사용자 질문.
+
+    Returns:
+        None
+    """
+
+    if not _looks_like_season_comparison(user_message):
+        return
+
+    filters = planned_slots.get("filters", {})
+    if not isinstance(filters, dict):
+        filters = {}
+
+    team_abbreviation = filters.get("team_abbreviation")
+    if not team_abbreviation:
+        candidates = filters.get("team_abbreviation_in")
+        if isinstance(candidates, list) and len(candidates) == 1:
+            team_abbreviation = str(candidates[0])
+            filters["team_abbreviation"] = team_abbreviation
+
+    if not team_abbreviation:
+        return
+
+    planned_slots["metric"] = "team_win_pct_by_season"
+    planned_slots.pop("season", None)
+    for key in ("season_default", "season_override"):
+        filters.pop(key, None)
+    planned_slots["filters"] = filters
+    if not _has_explicit_top_k(user_message):
+        planned_slots["top_k"] = 200
+
+
+def _looks_like_season_comparison(user_message: str) -> bool:
+    """
+    시즌별 비교 요청인지 판단한다.
+
+    Args:
+        user_message: 사용자 질문.
+
+    Returns:
+        시즌 비교 요청이면 True.
+    """
+
+    lowered = user_message.lower()
+    keywords = [
+        "시즌별",
+        "시즌 별",
+        "연도별",
+        "년도별",
+        "시즌 비교",
+        "season by season",
+        "season-by-season",
+        "seasonal",
+        "season comparison",
+    ]
+    return any(keyword in user_message or keyword in lowered for keyword in keywords)
+
+
+def _has_explicit_top_k(user_message: str) -> bool:
+    """
+    상위 N 등 명시적 제한이 있는지 확인한다.
+
+    Args:
+        user_message: 사용자 질문.
+
+    Returns:
+        명시적 제한이 있으면 True.
+    """
+
+    return bool(re.search(r"(?:상위|top)\\s*\\d+|\\d+\\s*개", user_message, re.IGNORECASE))
+
+
 def _override_attendance_metric(planned_slots: dict[str, Any], user_message: str) -> None:
     """
     관중 관련 질의에서 팀/경기 구분을 보정한다.
@@ -1333,6 +1535,9 @@ def _apply_default_season(
     """
 
     if planned_slots.get("season"):
+        return
+
+    if planned_slots.get("metric") == "team_win_pct_by_season" and _looks_like_season_comparison(user_message):
         return
 
     # "역대/커리어"처럼 시즌을 고정하면 뉘앙스가 망가지는 질문은 제외한다.

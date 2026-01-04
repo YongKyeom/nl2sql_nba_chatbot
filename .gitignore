@@ -8,6 +8,9 @@ data/**
 *.sqlite
 *.db
 
+# 차트 이미지
+result/plot/
+
 # 테스트 폴더 무시
 src/test/
 

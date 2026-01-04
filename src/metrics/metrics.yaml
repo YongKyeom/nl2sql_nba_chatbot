@@ -183,6 +183,52 @@ metrics:
       min_games: 10
       min_minutes: null
 
+  - name: team_win_pct_by_season
+    aliases:
+      - "시즌별 성적"
+      - "시즌별 승률"
+      - "시즌별 성적 비교"
+      - "시즌별 성적 비교분석"
+      - "시즌별 성적 분석"
+      - "시즌별 승률 비교"
+      - "season by season"
+      - "season-by-season"
+      - "seasonal record"
+      - "season comparison"
+      - "team season record"
+    description_ko: "특정 팀의 시즌별 승률/승패를 비교한다."
+    formula_ko: "시즌별 W/L 및 WIN% 집계"
+    required_tables: ["game"]
+    required_columns: ["season_id", "season_type", "team_abbreviation_home", "team_name_home", "wl_home", "team_abbreviation_away", "team_name_away", "wl_away"]
+    sql_template: |
+      WITH team_games AS (
+        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, wl_home AS wl
+        FROM game
+        WHERE season_type = 'Regular Season'
+        UNION ALL
+        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, wl_away AS wl
+        FROM game
+        WHERE season_type = 'Regular Season'
+      ),
+      filtered AS (
+        SELECT season_id, team_abbreviation, team_name, wl
+        FROM team_games
+        WHERE team_abbreviation = '{team_abbreviation}'
+      )
+      SELECT team_name,
+             team_abbreviation,
+             printf('%d-%02d', CAST(SUBSTR(season_id, 2, 4) AS INT), (CAST(SUBSTR(season_id, 2, 4) AS INT) + 1) % 100) AS season_year,
+             SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) AS w,
+             SUM(CASE WHEN wl = 'L' THEN 1 ELSE 0 END) AS l,
+             ROUND(1.0 * SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) / COUNT(*), 3) AS pct
+      FROM filtered
+      GROUP BY season_id, team_abbreviation, team_name
+      ORDER BY season_id DESC
+      LIMIT {limit};
+    cut_rules:
+      min_games: 10
+      min_minutes: null
+
   - name: point_diff
     aliases:
       - "득실차"

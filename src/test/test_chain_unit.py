@@ -4,11 +4,18 @@
 
 from __future__ import annotations
 
+import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# 로컬 실행 시 src 패키지를 인식하도록 프로젝트 루트를 sys.path에 추가한다.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent.chain import AgentDependencies, build_agent_chain
 from src.agent.guard import SQLGuard
@@ -19,6 +26,45 @@ from src.agent.validator import ResultValidator
 from src.db.schema_store import SchemaStore
 from src.db.sqlite_client import SQLiteClient
 from src.metrics.registry import MetricsRegistry
+
+
+class _Tee:
+    """
+    두 개의 스트림에 동시에 출력하는 간단한 Tee.
+
+    Args:
+        streams: 출력 대상 스트림 목록.
+    """
+
+    def __init__(self, *streams: Any) -> None:
+        """
+        Tee 출력기를 초기화한다.
+
+        Args:
+            streams: 출력 대상 스트림 목록.
+        """
+
+        self._streams = streams
+
+    def write(self, data: str) -> None:
+        """
+        데이터를 모든 스트림에 기록한다.
+
+        Args:
+            data: 출력 문자열.
+        """
+
+        for stream in self._streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self) -> None:
+        """
+        모든 스트림을 플러시한다.
+        """
+
+        for stream in self._streams:
+            stream.flush()
 
 
 class DummyRouter:
@@ -158,6 +204,19 @@ class DummyResponder:
 
         Args:
             metric: 메트릭 정의.
+
+        Returns:
+            응답 문자열.
+        """
+
+        return self._answer
+
+    def compose_general(self, user_message: str) -> str:
+        """
+        일반 안내 응답을 반환.
+
+        Args:
+            user_message: 사용자 질문.
 
         Returns:
             응답 문자열.
@@ -372,3 +431,25 @@ def run_query(
         print("\n=== Debug ===")
         print({"route": result.get("route"), "planned_slots": result.get("planned_slots")})
     return result
+
+
+if __name__ == "__main__":
+    # 1) 로그 파일을 준비한다.
+    log_dir = Path("log")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    log_path = log_dir / f"test_chain_unit_{timestamp}.log"
+
+    # 2) 콘솔과 로그 파일에 동시에 출력한다.
+    with log_path.open("w", encoding="utf-8") as log_file:
+        tee_stdout = _Tee(sys.stdout, log_file)
+        tee_stderr = _Tee(sys.stderr, log_file)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        try:
+            sys.stdout = tee_stdout
+            sys.stderr = tee_stderr
+            unittest.main(verbosity=2)
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
