@@ -340,6 +340,7 @@ def run_query(
     metric_name: str | None = None,
     sql: str | None = None,
     memory: ConversationMemory | None = None,
+    debug: bool = False,
 ) -> dict[str, object]:
     """
     단일 질의를 실행하고 결과를 반환.
@@ -366,4 +367,8 @@ def run_query(
         memory=memory,
     )
     chain = build_agent_chain(deps)
-    return chain.invoke({"user_message": query})
+    result = chain.invoke({"user_message": query})
+    if debug:
+        print("\n=== Debug ===")
+        print({"route": result.get("route"), "planned_slots": result.get("planned_slots")})
+    return result

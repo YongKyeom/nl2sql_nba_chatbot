@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
 
     user_message: str
     route: str
+    route_reason: str | None
     metric_name: str | None
     planned_slots: dict[str, Any]
     clarify_question: str | None
@@ -177,7 +178,7 @@ def _router_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     result = deps.router.route(context, deps.registry)
 
     deps.memory.update_route(result.route.value)
-    return {"route": result.route.value, "metric_name": result.metric_name}
+    return {"route": result.route.value, "metric_name": result.metric_name, "route_reason": result.reason}
 
 
 def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentState:

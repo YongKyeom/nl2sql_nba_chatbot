@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -163,6 +163,7 @@ class RouterLLM:
             response = self._client.chat.completions.create(
                 model=self._model,
                 temperature=self._temperature,
+                response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
@@ -173,9 +174,22 @@ class RouterLLM:
             route_value = parsed.get("route")
             reason = parsed.get("reason", "라우터 판단")
 
+            if route_value not in {route.value for route in Route}:
+                return _fallback_route(
+                    context.user_message,
+                    registry,
+                    context.has_previous,
+                    reason="라우터 응답이 유효하지 않아 폴백 처리",
+                )
+
             route = Route(route_value)
-        except Exception as exc:  # noqa: BLE001
-            return _fallback_route(context.user_message, registry, context.has_previous, reason=f"라우터 실패: {exc}")
+        except Exception:  # noqa: BLE001
+            return _fallback_route(
+                context.user_message,
+                registry,
+                context.has_previous,
+                reason="라우터 응답 파싱 실패로 폴백 처리",
+            )
 
         if route == Route.REUSE and not context.has_previous:
             return RouterResult(route=Route.SQL_REQUIRED, metric_name=metric_name, reason="이전 결과 없음")

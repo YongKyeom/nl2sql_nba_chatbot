@@ -73,8 +73,8 @@ def main() -> None:
 
         with st.chat_message("assistant"):
             with Timer() as timer:
-                result = scene.ask(user_text)
-            _handle_agent_result(result, timer.elapsed_ms, logger, user_text)
+                result = _run_agent_with_thinking(scene, user_text)
+            _handle_agent_result(result, timer.elapsed_ms, logger, user_text, show_thinking=False)
 
 
 def _init_session_state(config: AppConfig) -> None:
@@ -160,11 +160,26 @@ def _render_messages(messages: list[dict[str, object]]) -> None:
 
     for idx, message in enumerate(messages):
         with st.chat_message(message["role"]):
-            st.write(message["content"])
             sql = message.get("sql")
             dataframe = message.get("dataframe")
             error = message.get("error")
             error_detail = message.get("error_detail")
+            route = message.get("route")
+            route_reason = message.get("route_reason")
+            planned_slots = message.get("planned_slots")
+            last_result_schema = message.get("last_result_schema")
+
+            if message["role"] == "assistant" and (route or route_reason or planned_slots or last_result_schema):
+                _render_thinking_panel(
+                    route=route,
+                    route_reason=route_reason,
+                    planned_slots=planned_slots,
+                    last_result_schema=last_result_schema,
+                    sql=sql,
+                    message_index=idx,
+                )
+
+            st.write(message["content"])
 
             if sql:
                 st.code(sql, language="sql")
@@ -189,6 +204,7 @@ def _handle_agent_result(
     latency_ms: float | None,
     logger: JsonlLogger,
     user_text: str,
+    show_thinking: bool = True,
 ) -> None:
     """
     에이전트 결과를 화면과 로그에 반영.
@@ -209,6 +225,8 @@ def _handle_agent_result(
     error = result.get("error")
     error_detail = result.get("error_detail")
     route = result.get("route", "unknown")
+    route_reason = result.get("route_reason")
+    planned_slots = result.get("planned_slots")
 
     assistant_message = {
         "role": "assistant",
@@ -217,9 +235,23 @@ def _handle_agent_result(
         "dataframe": dataframe,
         "error": error,
         "error_detail": error_detail,
+        "route": route,
+        "route_reason": route_reason,
+        "planned_slots": planned_slots,
+        "last_result_schema": result.get("last_result_schema"),
     }
     st.session_state.messages.append(assistant_message)
     message_index = len(st.session_state.messages) - 1
+
+    if show_thinking:
+        _render_thinking_panel(
+            route=route,
+            route_reason=route_reason,
+            planned_slots=planned_slots,
+            last_result_schema=result.get("last_result_schema"),
+            sql=sql,
+            message_index=message_index,
+        )
 
     st.write(final_answer)
 
@@ -250,6 +282,109 @@ def _handle_agent_result(
         latency_ms=latency_ms,
         error=error if isinstance(error, str) else None,
     )
+
+
+def _run_agent_with_thinking(scene: ChatbotScene, user_message: str) -> dict[str, object]:
+    """
+    스트리밍으로 Thinking 패널을 업데이트하며 에이전트를 실행한다.
+
+    Args:
+        scene: Scene 인스턴스.
+        user_message: 사용자 입력.
+
+    Returns:
+        최종 결과 딕셔너리.
+    """
+
+    placeholder = st.empty()
+    final_state: dict[str, object] | None = None
+
+    try:
+        for state in scene.orchestrator.stream(user_message):
+            if not isinstance(state, dict):
+                continue
+            final_state = state
+            with placeholder.container():
+                st.caption("Thinking...")
+                _render_thinking_panel(
+                    route=state.get("route"),
+                    route_reason=state.get("route_reason"),
+                    planned_slots=state.get("planned_slots"),
+                    last_result_schema=state.get("last_result_schema"),
+                    sql=state.get("sql"),
+                    message_index=len(st.session_state.messages),
+                )
+    except Exception:
+        placeholder.empty()
+        return scene.ask(user_message)
+
+    if final_state is None or final_state.get("final_answer") is None:
+        placeholder.empty()
+        return scene.ask(user_message)
+
+    with placeholder.container():
+        st.caption("Thinking 완료")
+        _render_thinking_panel(
+            route=final_state.get("route"),
+            route_reason=final_state.get("route_reason"),
+            planned_slots=final_state.get("planned_slots"),
+            last_result_schema=final_state.get("last_result_schema"),
+            sql=final_state.get("sql"),
+            message_index=len(st.session_state.messages),
+        )
+
+    return final_state
+
+
+def _render_thinking_panel(
+    *,
+    route: str | None,
+    route_reason: str | None,
+    planned_slots: dict[str, object] | None,
+    last_result_schema: list[str] | None,
+    sql: str | None,
+    message_index: int,
+) -> None:
+    """
+    Thinking(단계별 상태)을 렌더링한다.
+
+    Args:
+        route: 라우팅 결과.
+        route_reason: 라우팅 근거.
+        planned_slots: 플래너 슬롯.
+        last_result_schema: 직전 결과 스키마.
+        sql: 생성/실행 SQL.
+        message_index: 메시지 인덱스(고유 키용).
+
+    Returns:
+        None
+    """
+
+    with st.expander("Thinking", expanded=False):
+        steps = [
+            ("Routing", bool(route)),
+            ("Planning", bool(planned_slots)),
+            ("SQL", bool(sql)),
+        ]
+        for label, done in steps:
+            icon = "✅" if done else "⏳"
+            st.markdown(f"- {icon} {label}")
+
+        if route_reason:
+            st.caption(f"route_reason: {route_reason}")
+
+        payload: dict[str, object] = {}
+        if route:
+            payload["route"] = route
+        if planned_slots:
+            payload["planned_slots"] = planned_slots
+        if last_result_schema:
+            payload["last_result_schema"] = last_result_schema
+        if sql:
+            payload["sql"] = sql
+
+        if payload:
+            st.json(payload, expanded=True)
 
 
 if __name__ == "__main__":

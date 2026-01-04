@@ -4,7 +4,7 @@ import os
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from src.agent.chain import AgentDependencies, build_agent_chain
 from src.agent.guard import SQLGuard
@@ -163,6 +163,43 @@ class AgentOrchestrator:
         )
         return result
 
+    def stream(self, user_message: str) -> Iterator[dict[str, object]]:
+        """
+        LangGraph 스트리밍 API를 사용해 단계별 상태를 방출한다.
+
+        Args:
+            user_message: 사용자 질문.
+
+        Yields:
+            부분 상태 딕셔너리.
+        """
+
+        if not hasattr(self._chain, "stream"):
+            # 스트리밍을 지원하지 않는 경우 폴백
+            yield self.invoke(user_message)
+            return
+
+        # 스트리밍에서는 메모리 턴 마킹만 하고, finish_turn은 최종 상태에서 처리한다.
+        self.memory.start_turn(user_message)
+        last_state: dict[str, object] | None = None
+        try:
+            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode="values")
+        except TypeError:
+            stream_iter = self._chain.stream({"user_message": user_message})
+
+        for state in stream_iter:
+            last_state = state
+            yield state
+
+        if last_state is not None:
+            final_answer = last_state.get("final_answer")
+            planned_slots = last_state.get("planned_slots")
+            self.memory.finish_turn(
+                assistant_message=str(final_answer) if isinstance(final_answer, str) else None,
+                route=str(last_state.get("route")) if last_state.get("route") else None,
+                sql=str(last_state.get("sql")) if isinstance(last_state.get("sql"), str) else None,
+                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+            )
     def reset_memory(self) -> None:
         """
         대화 메모리를 초기화한다.

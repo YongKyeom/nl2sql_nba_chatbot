@@ -74,6 +74,18 @@ def _print_result(query: str, result: dict[str, object]) -> None:
     print("\n=== 답변 ===")
     print(result.get("final_answer"))
 
+    route = result.get("route")
+    route_reason = result.get("route_reason")
+    planned_slots = result.get("planned_slots")
+    if route or route_reason or planned_slots:
+        print("\n=== Debug ===")
+        if route:
+            print(f"route: {route}")
+        if route_reason:
+            print(f"route_reason: {route_reason}")
+        if planned_slots:
+            print(f"planned_slots: {planned_slots}")
+
     sql = result.get("sql")
     if isinstance(sql, str) and sql:
         print("\n=== SQL ===")
