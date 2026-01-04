@@ -14,6 +14,29 @@ NBA SQLite DB를 기반으로 NL2SQL 에이전트를 제공하는 프로젝트�
 
 - Kaggle: https://www.kaggle.com/datasets/wyattowalsh/basketball
 
+## 데이터셋 상세
+
+### 포함 테이블
+
+- game, game_info, game_summary, line_score, other_stats
+- team, team_info_common, team_details, team_history
+- common_player_info, player, inactive_players
+- draft_history, draft_combine_stats
+- play_by_play
+- officials
+
+### 제공 가능한 범위
+
+- 팀 경기 스탯 기반 지표(득점/리바운드/어시스트/슈팅 효율 등)
+- 팀 비교/순위/트렌드(시즌/기간 기준)
+- 드래프트/컴바인/선수 프로필 정보
+- 플레이바이플레이 이벤트 기반 간접 지표(동시 관여 빈도 등)
+
+### 제한 사항
+
+- 선수 경기 로그(월별/경기별 득점·출전시간·슛 성공률) 테이블이 없어 해당 질의는 정확히 지원하지 않습니다.
+- 질문이 데이터 범위를 벗어나면 확인 질문 또는 대체 제안을 제공합니다.
+
 ## 환경 설정
 
 `.env` 파일에 API 키를 설정합니다(실제 키는 노출하지 마세요).
