@@ -10,6 +10,7 @@ from src.agent.chain import AgentDependencies, build_agent_chain
 from src.agent.fewshot_generator import FewshotGenerator
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
+from src.agent.multi_step_planner import MultiStepPlanner
 from src.agent.planner import Planner
 from src.agent.responder import Responder, ResponderConfig
 from src.agent.router import RouterLLM
@@ -105,6 +106,7 @@ class AgentOrchestrator:
             planner=Planner(self.registry),
             fewshot_generator=FewshotGenerator(model=resolved_options.model, temperature=0.2),
             fewshot_candidate_limit=config.fewshot_candidate_limit,
+            multi_step_planner=MultiStepPlanner(model=resolved_options.model, temperature=0.0),
             sql_generator=SQLGenerator(model=resolved_options.model, temperature=resolved_options.temperature),
             guard=SQLGuard(config.schema_json_path),
             validator=ResultValidator(),

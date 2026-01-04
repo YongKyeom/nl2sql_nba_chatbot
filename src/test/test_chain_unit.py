@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.agent.chain import AgentDependencies, build_agent_chain
 from src.agent.fewshot_generator import SchemaSelectionResult
+from src.agent.multi_step_planner import MultiStepPlanResult
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
 from src.agent.planner import Planner
@@ -180,6 +181,25 @@ class DummyFewshotGenerator:
         """
 
         return SchemaSelectionResult(tables=[], columns_by_table={}, reason=None)
+
+
+class DummyMultiStepPlanner:
+    """
+    테스트용 멀티 스텝 플래너.
+    """
+
+    def plan(self, payload: Any) -> Any:
+        """
+        멀티 스텝 미사용으로 고정한다.
+
+        Args:
+            payload: 멀티 스텝 입력.
+
+        Returns:
+            멀티 스텝 계획 결과.
+        """
+
+        return MultiStepPlanResult(use_multi_step=False, steps=[], combine=None, reason=None)
 
 
 class DummySummarizer:
@@ -403,6 +423,7 @@ def _build_dependencies(
         planner=Planner(registry),
         fewshot_generator=DummyFewshotGenerator(),
         fewshot_candidate_limit=5,
+        multi_step_planner=DummyMultiStepPlanner(),
         sql_generator=DummySQLGenerator(sql),
         guard=SQLGuard(schema_path),
         validator=ResultValidator(),

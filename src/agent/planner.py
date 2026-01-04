@@ -108,6 +108,58 @@ class Planner:
 
         return PlannerOutput(slots=slots, clarify_question=clarify_question)
 
+    def plan_with_retry(
+        self,
+        user_message: str,
+        previous_slots: PlannerSlots | None,
+        *,
+        max_retries: int = 5,
+    ) -> PlannerOutput:
+        """
+        메트릭이 누락/오류일 때 최대 N회 보정하며 플래닝한다.
+
+        Args:
+            user_message: 사용자 입력.
+            previous_slots: 직전 슬롯(없으면 None).
+            max_retries: 최대 보정 시도 횟수.
+
+        Returns:
+            PlannerOutput.
+        """
+
+        if max_retries < 1:
+            return self.plan(user_message, previous_slots)
+
+        output = self.plan(user_message, previous_slots)
+        metric_name = output.slots.metric
+
+        # 후보 메트릭을 최대 N개까지 확보해 강제로 보정한다.
+        candidates = self._registry.search(user_message, limit=max_retries)
+        if metric_name and self._registry.get(metric_name):
+            if not candidates or metric_name == candidates[0].name:
+                return output
+
+        for candidate in candidates:
+            forced_slots = output.slots.model_dump()
+            forced_slots["metric"] = candidate.name
+            slots = PlannerSlots(**forced_slots)
+            clarify_question = _build_clarify_question(user_message, slots, self._registry)
+            metric_name = slots.metric
+            if metric_name and self._registry.get(metric_name):
+                return PlannerOutput(slots=slots, clarify_question=clarify_question)
+
+        if previous_slots is not None:
+            # 이전 슬롯이 영향을 줬을 가능성이 있어 빈 상태로 재시도한다.
+            for _ in range(max_retries):
+                retry_output = self.plan(user_message, None)
+                metric_name = retry_output.slots.metric
+                if metric_name and self._registry.get(metric_name):
+                    return retry_output
+
+            return retry_output
+
+        return output
+
 
 def _extract_entity_type(text: str) -> Literal["player", "team", "game"] | None:
     """

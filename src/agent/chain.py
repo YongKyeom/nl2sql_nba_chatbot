@@ -17,6 +17,7 @@ from src.agent.fewshot_generator import (
 )
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
+from src.agent.multi_step_planner import MultiStepPlanInput, MultiStepPlanner
 from src.agent.planner import Planner, PlannerOutput, PlannerSlots
 from src.agent.responder import Responder
 from src.agent.router import apply_reuse_rules, Route, RouterLLM, RoutingContext
@@ -57,14 +58,13 @@ class MultiStepPlan(TypedDict, total=False):
     """
     멀티 스텝 실행 계획.
 
-    kind:
-        attendance_top_teams_with_rank: 관중수 상위 팀 + 시즌 성적 결합
+    steps:
+        실행할 단계 목록.
     """
 
-    kind: Literal["attendance_top_teams_with_rank"]
-    season_year: str | None
-    season_id: str | None
-    top_k: int
+    steps: list[dict[str, Any]]
+    combine: dict[str, Any] | None
+    reason: str | None
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,7 @@ class AgentDependencies:
         planner: 플래너.
         fewshot_generator: Few-shot 생성기.
         fewshot_candidate_limit: few-shot 후보 sql_template 최대 개수.
+        multi_step_planner: 멀티 스텝 플래너.
         sql_generator: SQL 생성기.
         guard: SQL 가드.
         validator: 결과 검증기.
@@ -95,6 +96,7 @@ class AgentDependencies:
     planner: Planner
     fewshot_generator: FewshotGenerator
     fewshot_candidate_limit: int
+    multi_step_planner: MultiStepPlanner
     sql_generator: SQLGenerator
     guard: SQLGuard
     validator: ResultValidator
@@ -186,7 +188,14 @@ def build_agent_chain(deps: AgentDependencies):
     graph.add_edge("general_answer", END)
     graph.add_edge("reuse", END)
     graph.add_edge("clarify", END)
-    graph.add_edge("multi_step", "summarize")
+    graph.add_conditional_edges(
+        "multi_step",
+        _error_selector,
+        {
+            "error": "finalize_error",
+            "continue": "summarize",
+        },
+    )
     graph.add_edge("summarize", END)
     graph.add_edge("finalize_error", END)
 
@@ -334,7 +343,7 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     if deps.memory.last_slots:
         previous = PlannerSlots(**deps.memory.last_slots)
 
-    plan_output: PlannerOutput = deps.planner.plan(state["user_message"], previous)
+    plan_output: PlannerOutput = deps.planner.plan_with_retry(state["user_message"], previous, max_retries=5)
     planned_slots = plan_output.slots.model_dump()
     _fill_recent_season(planned_slots, state["user_message"], deps.sqlite_client)
     _normalize_season(planned_slots, deps.sqlite_client)
@@ -343,7 +352,14 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     _override_season_comparison(planned_slots, state["user_message"])
     _apply_default_season(planned_slots, state["user_message"], deps)
     _override_attendance_metric(planned_slots, state["user_message"])
-    multi_step_plan = _build_multi_step_plan(state["user_message"], planned_slots)
+    multi_step_plan = _build_multi_step_plan_llm(
+        state["user_message"],
+        planned_slots,
+        deps.schema_store,
+        deps.registry,
+        deps.multi_step_planner,
+        deps.memory,
+    )
 
     return {
         "planned_slots": planned_slots,
@@ -492,65 +508,298 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     if not plan:
         return {"error": "멀티 스텝 계획이 없습니다.", "final_answer": "요청을 처리하는 중 오류가 발생했습니다."}
 
-    kind = plan.get("kind")
-    if kind != "attendance_top_teams_with_rank":
-        return {"error": "지원하지 않는 멀티 스텝 계획입니다.", "final_answer": "요청을 처리할 수 없습니다."}
+    steps = plan.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return {"error": "멀티 스텝 단계가 비어 있습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
-    season_year = plan.get("season_year")
-    season_id = plan.get("season_id")
-    top_k = int(plan.get("top_k", 10))
+    base_slots = state.get("planned_slots", {})
+    previous_slots = PlannerSlots(**base_slots) if base_slots else PlannerSlots()
+    results: list[pd.DataFrame] = []
+    sql_chunks: list[str] = []
+    last_dataframe: pd.DataFrame | None = None
 
-    if not season_year or not season_id:
-        latest = _fetch_latest_season(deps.sqlite_client)
-        if latest:
-            season_year = latest
-            season_id = _season_year_to_id(latest)
-        if not season_year or not season_id:
-            return {"error": "시즌 정보를 확인할 수 없습니다.", "final_answer": "시즌 정보를 확인할 수 없습니다."}
+    for idx, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            return {"error": "멀티 스텝 단계 형식이 올바르지 않습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
-    sql_first = _build_attendance_top_teams_sql(season_id, top_k)
-    guard_first = deps.guard.validate(sql_first)
-    if not guard_first.is_valid:
-        return {
-            "error": "; ".join(guard_first.errors),
-            "final_answer": "관중수 집계 SQL이 유효하지 않습니다.",
-        }
+        step_question = str(step.get("question") or state["user_message"]).strip()
+        step_output = deps.planner.plan_with_retry(step_question, previous_slots, max_retries=5)
+        step_slots = step_output.slots.model_dump()
+        _apply_step_overrides(step_slots, step, last_dataframe)
 
-    try:
-        first_result = deps.sqlite_client.execute(guard_first.sql)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"관중수 조회 실패: {exc}", "final_answer": "관중수 집계 중 오류가 발생했습니다."}
+        metric_name = step_slots.get("metric")
+        metric = deps.registry.get(metric_name) if metric_name else None
+        if metric is None:
+            return {"error": "메트릭 정의를 찾을 수 없습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
-    if first_result.dataframe.empty:
-        return {"error": "관중수 집계 결과 없음", "final_answer": "관중수 집계 결과가 없습니다."}
+        template_sql = _render_metric_template(metric, step_slots)
+        if template_sql:
+            sql = template_sql
+        else:
+            try:
+                sql = deps.sql_generator.generate_sql(
+                    SQLGenerationInput(
+                        user_question=step_question,
+                        planned_slots=step_slots,
+                        metric_context=deps.registry.build_sql_context(metric),
+                        schema_context=state.get("schema_context") or deps.schema_store.build_context(),
+                        last_sql=deps.memory.last_sql,
+                        context_hint=build_context_hint(deps.memory),
+                        fewshot_examples=state.get("fewshot_examples"),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "error": f"SQL 생성 실패: {exc}",
+                    "error_detail": {"exception": str(exc), "traceback": traceback.format_exc(), "step": idx},
+                    "final_answer": "요청하신 내용을 조회하지 못했습니다. 질문을 조금 더 구체화해 주세요.",
+                }
 
-    teams = _extract_team_list(first_result.dataframe)
-    if not teams:
-        return {"error": "팀 목록을 추출하지 못했습니다.", "final_answer": "팀 목록을 추출하지 못했습니다."}
+        if not sql or not str(sql).strip():
+            return {
+                "error": "SQL 생성 결과가 비어 있습니다.",
+                "error_detail": {"step": idx},
+                "final_answer": "요청하신 내용을 조회하지 못했습니다. 질문을 조금 더 구체화해 주세요.",
+            }
 
-    sql_second = _build_win_pct_for_teams_sql(season_id, teams)
-    guard_second = deps.guard.validate(sql_second)
-    if not guard_second.is_valid:
-        return {
-            "error": "; ".join(guard_second.errors),
-            "final_answer": "팀 성적 SQL이 유효하지 않습니다.",
-        }
+        guard_result = _guard_sql_with_retry(sql, step_question, step_slots, deps)
+        if not guard_result:
+            return {"error": "SQL 가드레일을 통과하지 못했습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
-    try:
-        second_result = deps.sqlite_client.execute(guard_second.sql)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"팀 성적 조회 실패: {exc}", "final_answer": "팀 성적 조회 중 오류가 발생했습니다."}
+        try:
+            result = deps.sqlite_client.execute(guard_result)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"SQL 실행 실패: {exc}", "final_answer": "SQL 실행 중 오류가 발생했습니다."}
 
-    merged = _merge_attendance_with_rank(first_result.dataframe, second_result.dataframe, season_year)
-    final_sql = f"-- step1\n{guard_first.sql}\n-- step2\n{guard_second.sql}"
+        deps.memory.update_sql_result(result.executed_sql, result.dataframe, step_slots)
+        results.append(result.dataframe)
+        sql_chunks.append(f"-- step{idx}\n{result.executed_sql}")
+        last_dataframe = result.dataframe
+        previous_slots = PlannerSlots(**step_slots)
 
-    deps.memory.update_sql_result(final_sql, merged, state.get("planned_slots", {}))
+    final_df = _combine_multi_step_results(results, plan.get("combine"))
+    final_sql = "\n".join(sql_chunks)
+    deps.memory.update_sql_result(final_sql, final_df, state.get("planned_slots", {}))
 
     return {
         "sql": final_sql,
-        "result_df": merged,
-        "last_result_schema": list(merged.columns),
+        "result_df": final_df,
+        "last_result_schema": list(final_df.columns),
     }
+
+
+def _apply_step_overrides(
+    step_slots: dict[str, Any],
+    step: dict[str, Any],
+    previous_df: pd.DataFrame | None,
+) -> None:
+    """
+    멀티 스텝 단계별 override를 적용한다.
+
+    Args:
+        step_slots: 단계별 슬롯.
+        step: 단계 정의.
+        previous_df: 이전 단계 결과.
+
+    Returns:
+        None
+    """
+
+    overrides = step.get("overrides", {})
+    if isinstance(overrides, dict):
+        for key, value in overrides.items():
+            step_slots[key] = value
+
+    if isinstance(step.get("top_k"), int):
+        step_slots["top_k"] = step["top_k"]
+
+    filters = step_slots.get("filters", {})
+    if not isinstance(filters, dict):
+        filters = {}
+
+    step_filters = step.get("filters", {})
+    if isinstance(step_filters, dict):
+        for key, value in step_filters.items():
+            if value == "__from_previous__" and isinstance(previous_df, pd.DataFrame):
+                if key in {"team_abbreviation", "team_abbreviation_in"}:
+                    filters["team_abbreviation_in"] = _extract_team_list(previous_df)
+                    continue
+                if key in {"player_name", "player_name_in"}:
+                    filters["player_name_in"] = _extract_player_list(previous_df)
+                    continue
+            filters[key] = value
+
+    step_slots["filters"] = filters
+
+
+def _guard_sql_with_retry(
+    sql: str,
+    user_question: str,
+    planned_slots: dict[str, Any],
+    deps: AgentDependencies,
+) -> str | None:
+    """
+    SQL 가드와 수정을 반복해 유효 SQL을 확보한다.
+
+    Args:
+        sql: 생성된 SQL.
+        user_question: 사용자 질문.
+        planned_slots: 플래너 슬롯.
+        deps: 에이전트 의존성.
+
+    Returns:
+        유효 SQL(없으면 None).
+    """
+
+    guard_result = deps.guard.validate(sql)
+    if guard_result.is_valid:
+        return guard_result.sql
+
+    metric_context = _get_metric_context(planned_slots, deps.registry)
+    failure_reason = "; ".join(guard_result.errors)
+    failed_sql = sql
+
+    for _ in range(MAX_SQL_RETRIES):
+        repair_sql = deps.sql_generator.repair_sql(
+            SQLRepairInput(
+                user_question=user_question,
+                failed_sql=failed_sql,
+                failure_reason=failure_reason,
+                metric_context=metric_context,
+                schema_context=deps.schema_store.build_context(),
+            )
+        )
+        repaired = deps.guard.validate(repair_sql)
+        if repaired.is_valid:
+            return repaired.sql
+        failure_reason = "; ".join(repaired.errors)
+        failed_sql = repair_sql
+
+    return None
+
+
+def _combine_multi_step_results(results: list[pd.DataFrame], combine: dict[str, Any] | None) -> pd.DataFrame:
+    """
+    멀티 스텝 결과를 결합한다.
+
+    Args:
+        results: 단계별 결과.
+        combine: 결합 규칙.
+
+    Returns:
+        결합된 데이터프레임.
+    """
+
+    if not results:
+        return pd.DataFrame()
+
+    if not isinstance(combine, dict):
+        return results[-1]
+
+    method = str(combine.get("method") or "").lower()
+    left_step = int(combine.get("left_step") or 1) - 1
+    right_step = int(combine.get("right_step") or 2) - 1
+    on_keys = combine.get("on") or []
+
+    if left_step < 0 or right_step < 0:
+        return results[-1]
+    if left_step >= len(results) or right_step >= len(results):
+        return results[-1]
+    if not isinstance(on_keys, list) or not on_keys:
+        return results[-1]
+
+    how_map = {
+        "left_join": "left",
+        "inner_join": "inner",
+        "right_join": "right",
+    }
+    how = how_map.get(method)
+    if not how:
+        return results[-1]
+
+    left_df = results[left_step]
+    right_df = results[right_step]
+
+    try:
+        return left_df.merge(right_df, on=on_keys, how=how, suffixes=("_left", "_right"))
+    except Exception:
+        return results[-1]
+
+
+def _sanitize_multi_step_steps(
+    steps: list[dict[str, Any]],
+    registry: MetricsRegistry,
+) -> list[dict[str, Any]]:
+    """
+    멀티 스텝 계획의 메트릭/필터를 레지스트리에 맞게 보정한다.
+
+    Args:
+        steps: 멀티 스텝 단계 목록.
+        registry: 메트릭 레지스트리.
+
+    Returns:
+        보정된 단계 목록.
+    """
+
+    sanitized: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+
+        overrides = step.get("overrides")
+        if isinstance(overrides, dict) and "metric" in overrides:
+            metric_value = overrides.get("metric")
+            resolved = _resolve_metric_name(metric_value, registry, str(step.get("question") or ""))
+            if resolved:
+                overrides["metric"] = resolved
+            else:
+                overrides.pop("metric", None)
+
+        sanitized.append(step)
+
+    return sanitized
+
+
+def _resolve_metric_name(
+    metric_value: Any,
+    registry: MetricsRegistry,
+    fallback_query: str,
+) -> str | None:
+    """
+    메트릭 이름을 레지스트리 기준으로 보정한다.
+
+    Args:
+        metric_value: 후보 메트릭 값.
+        registry: 메트릭 레지스트리.
+        fallback_query: 대체 검색용 문장.
+
+    Returns:
+        보정된 메트릭 이름 또는 None.
+    """
+
+    if isinstance(metric_value, str):
+        raw = metric_value.strip()
+        if raw:
+            metric = registry.get(raw)
+            if metric is not None:
+                return metric.name
+            normalized = raw.replace("_", " ").strip()
+            if normalized:
+                metric = registry.get(normalized)
+                if metric is not None:
+                    return metric.name
+
+            search_seed = f"{raw} {fallback_query}".strip()
+            candidates = registry.search(search_seed, limit=1)
+            if candidates:
+                return candidates[0].name
+
+    if fallback_query:
+        candidates = registry.search(fallback_query, limit=1)
+        if candidates:
+            return candidates[0].name
+
+    return None
 
 
 def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
@@ -1193,30 +1442,49 @@ def _looks_like_team_performance_query(user_message: str) -> bool:
     return any(keyword in user_message for keyword in keywords)
 
 
-def _build_multi_step_plan(user_message: str, planned_slots: dict[str, Any]) -> MultiStepPlan | None:
+def _build_multi_step_plan_llm(
+    user_message: str,
+    planned_slots: dict[str, Any],
+    schema_store: SchemaStore,
+    registry: MetricsRegistry,
+    planner: MultiStepPlanner,
+    memory: ConversationMemory,
+) -> MultiStepPlan | None:
     """
-    멀티 스텝 실행 계획을 생성한다.
+    LLM 기반 멀티 스텝 계획을 생성한다.
 
     Args:
         user_message: 사용자 질문.
         planned_slots: 플래너 슬롯.
+        schema_store: 스키마 스토어.
+        planner: 멀티 스텝 플래너.
+        memory: 대화 메모리.
 
     Returns:
-        멀티 스텝 계획(해당 없으면 None).
+        멀티 스텝 계획(없으면 None).
     """
 
-    if not _is_attendance_rank_query(user_message, planned_slots):
+    schema_context = schema_store.build_full_context(max_columns=8)
+    result = planner.plan(
+        MultiStepPlanInput(
+            user_question=user_message,
+            planned_slots=planned_slots,
+            schema_context=schema_context,
+            context_hint=build_context_hint(memory),
+        )
+    )
+
+    if not result.use_multi_step or not result.steps:
         return None
 
-    season_year = planned_slots.get("season")
-    season_id = _season_year_to_id(season_year) if season_year else None
-    top_k = int(planned_slots.get("top_k") or 10)
+    sanitized_steps = _sanitize_multi_step_steps(result.steps, registry)
+    if not sanitized_steps:
+        return None
 
     return {
-        "kind": "attendance_top_teams_with_rank",
-        "season_year": season_year,
-        "season_id": season_id,
-        "top_k": top_k,
+        "steps": sanitized_steps,
+        "combine": result.combine,
+        "reason": result.reason,
     }
 
 
@@ -1370,118 +1638,18 @@ def _metrics_for_multi_step(plan: MultiStepPlan) -> list[str]:
         메트릭 이름 리스트.
     """
 
-    kind = plan.get("kind")
-    if kind == "attendance_top_teams_with_rank":
-        return ["attendance_top_teams", "win_pct"]
-    return []
+    steps = plan.get("steps", [])
+    metrics: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        overrides = step.get("overrides", {})
+        if isinstance(overrides, dict):
+            metric = overrides.get("metric")
+            if isinstance(metric, str) and metric not in metrics:
+                metrics.append(metric)
+    return metrics
 
-
-def _is_attendance_rank_query(user_message: str, planned_slots: dict[str, Any]) -> bool:
-    """
-    관중 기반 팀 목록 + 리그 성적을 함께 요청하는지 판단한다.
-
-    Args:
-        user_message: 사용자 질문.
-        planned_slots: 플래너 슬롯.
-
-    Returns:
-        멀티 스텝 처리 대상이면 True.
-    """
-
-    lowered = user_message.lower()
-    attendance_hit = "관중" in user_message or "attendance" in lowered
-    league_rank_hit = any(keyword in user_message for keyword in ["리그", "성적", "승률", "순위표", "랭킹"])
-    team_hit = "팀" in user_message or planned_slots.get("entity_type") == "team"
-
-    if not attendance_hit or not league_rank_hit or not team_hit:
-        return False
-
-    return True
-
-
-def _build_attendance_top_teams_sql(season_id: str, top_k: int) -> str:
-    """
-    시즌 기준 관중수 상위 팀 SQL을 생성한다.
-
-    Args:
-        season_id: 시즌 ID.
-        top_k: 상위 N.
-
-    Returns:
-        SQL 문자열.
-    """
-
-    return f"""
-      WITH team_attendance AS (
-        SELECT g.season_id,
-               g.team_abbreviation_home AS team_abbreviation,
-               g.team_name_home AS team_name,
-               gi.attendance AS attendance
-        FROM game_info AS gi
-        JOIN game AS g ON g.game_id = gi.game_id
-        WHERE gi.attendance IS NOT NULL
-      )
-      SELECT team_name,
-             team_abbreviation,
-             ROUND(AVG(attendance), 0) AS avg_attendance,
-             SUM(attendance) AS total_attendance,
-             COUNT(*) AS game_count
-      FROM team_attendance
-      WHERE season_id = '{season_id}'
-      GROUP BY team_abbreviation, team_name
-      ORDER BY avg_attendance DESC
-      LIMIT {top_k};
-    """.strip()
-
-
-def _build_win_pct_for_teams_sql(season_id: str, teams: list[str]) -> str:
-    """
-    팀 목록에 대한 시즌 승률/리그 순위 SQL을 생성한다.
-
-    Args:
-        season_id: 시즌 ID.
-        teams: 팀 약어 리스트.
-
-    Returns:
-        SQL 문자열.
-    """
-
-    normalized = _normalize_team_list(teams)
-    team_list = ", ".join(f"'{team}'" for team in normalized) if normalized else "''"
-
-    return f"""
-      WITH team_games AS (
-        SELECT season_id, team_abbreviation_home AS team_abbreviation, team_name_home AS team_name, wl_home AS wl
-        FROM game
-        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
-        UNION ALL
-        SELECT season_id, team_abbreviation_away AS team_abbreviation, team_name_away AS team_name, wl_away AS wl
-        FROM game
-        WHERE season_id = '{season_id}' AND season_type = 'Regular Season'
-      ),
-      team_stats AS (
-        SELECT team_name,
-               team_abbreviation,
-               SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) AS w,
-               SUM(CASE WHEN wl = 'L' THEN 1 ELSE 0 END) AS l,
-               ROUND(1.0 * SUM(CASE WHEN wl = 'W' THEN 1 ELSE 0 END) / COUNT(*), 3) AS pct
-        FROM team_games
-        GROUP BY team_abbreviation, team_name
-      ),
-      ranked AS (
-        SELECT team_name,
-               team_abbreviation,
-               w,
-               l,
-               pct,
-               DENSE_RANK() OVER (ORDER BY pct DESC) AS league_rank
-        FROM team_stats
-      )
-      SELECT team_name, team_abbreviation, w, l, pct, league_rank
-      FROM ranked
-      WHERE team_abbreviation IN ({team_list})
-      ORDER BY league_rank ASC;
-    """.strip()
 
 
 def _extract_team_list(dataframe: pd.DataFrame) -> list[str]:
@@ -1508,48 +1676,25 @@ def _extract_team_list(dataframe: pd.DataFrame) -> list[str]:
     return _normalize_team_list(values)
 
 
-def _merge_attendance_with_rank(
-    attendance_df: pd.DataFrame,
-    rank_df: pd.DataFrame,
-    season_year: str,
-) -> pd.DataFrame:
+def _extract_player_list(dataframe: pd.DataFrame) -> list[str]:
     """
-    관중수 결과와 리그 성적을 병합한다.
+    데이터프레임에서 선수 이름 목록을 추출한다.
 
     Args:
-        attendance_df: 관중수 집계 결과.
-        rank_df: 리그 성적 결과.
-        season_year: 시즌 문자열.
+        dataframe: 결과 데이터프레임.
 
     Returns:
-        병합된 데이터프레임.
+        선수 이름 리스트.
     """
 
-    merged = attendance_df.merge(rank_df, on="team_abbreviation", how="left", suffixes=("_attendance", "_rank"))
+    candidates = ["player_name", "display_first_last", "player"]
+    values: list[str] = []
+    for col in candidates:
+        if col in dataframe.columns:
+            values.extend(dataframe[col].dropna().astype(str).tolist())
+            break
+    return sorted({value for value in values if value})
 
-    if "team_name_attendance" in merged.columns or "team_name_rank" in merged.columns:
-        merged["team_name"] = merged.get("team_name_attendance")
-        if "team_name_rank" in merged.columns:
-            merged["team_name"] = merged["team_name"].fillna(merged["team_name_rank"])
-        merged = merged.drop(columns=[col for col in ["team_name_attendance", "team_name_rank"] if col in merged.columns])
-
-    if "season_year" not in merged.columns:
-        merged["season_year"] = season_year
-
-    preferred = [
-        "team_name",
-        "team_abbreviation",
-        "avg_attendance",
-        "total_attendance",
-        "game_count",
-        "league_rank",
-        "pct",
-        "w",
-        "l",
-        "season_year",
-    ]
-    remaining = [col for col in merged.columns if col not in preferred]
-    return merged[preferred + remaining]
 
 
 def _normalize_team_list(values: list[str]) -> list[str]:
