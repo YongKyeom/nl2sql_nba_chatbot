@@ -2,6 +2,8 @@
 
 NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를 표/요약/차트로 제공하는 프로젝트입니다. 지표 정의는 `src/metrics/metrics.yaml`에 한글로 주입되어 코드 수정 없이 확장할 수 있습니다.
 
+> 이 저장소는 **Kaggle Basketball 데이터셋(SQLite)** 을 기준으로 만들어졌습니다. 실행 환경에 따라 테이블/컬럼 구성이 다르면 일부 질의가 동작하지 않을 수 있습니다.
+
 ## 주요 기능
 
 - **Scene/Orchestrator 구조**로 Streamlit/로컬 러너가 동일한 경로로 실행됩니다.
@@ -19,6 +21,14 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 ## 데이터 출처
 
 - Kaggle: https://www.kaggle.com/datasets/wyattowalsh/basketball
+
+### Kaggle 데이터 다운로드/배치
+
+Kaggle에서 내려받은 압축 파일에는 SQLite 파일이 포함되어 있습니다. 아래 기준으로 정리해 주세요.
+
+1. Kaggle에서 데이터셋을 다운로드합니다.
+2. 압축을 해제한 뒤 파일명을 `nba.sqlite` 으로 변경하세요.
+3. 프로젝트의 `data/` 폴더에 복사합니다.
 
 ## 데이터셋 상세
 
@@ -44,6 +54,24 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 - 선수 경기 로그(월별/경기별 득점·출전시간·슛 성공률) 테이블이 없어 해당 질의는 정확히 지원되지 않습니다.
 - 질문이 데이터 범위를 벗어나면 확인 질문 또는 대체 제안을 제공합니다.
 
+### 데이터 범위(현 DB 기준)
+
+- 경기 수: 약 65k (`game` 기준)
+- 선수 수: 약 3.6k (`common_player_info` 기준)
+- 드래프트 행 수: 약 8.2k (`draft_history` 기준)
+- 기간: 1946-11 ~ 2023-06 (`game_date` 기준)
+
+### 시즌 표기(중요)
+
+질의에서 “2022-23 시즌”처럼 말하면, 내부적으로는 아래 두 값이 함께 쓰입니다.
+
+- `season_year`: 사람 친화 표기(예: `2022-23`)
+- `season_id`: 5자리 코드(예: `22022`, `42022`)
+  - `22022` = 2022-23 **정규시즌**(Regular Season)
+  - `42022` = 2022-23 **플레이오프**(Playoffs)
+
+프로젝트의 대부분 지표는 `game.season_type = 'Regular Season'`을 기본으로 집계합니다.
+
 ## 환경 설정
 
 `.env`에 API 키와 실행 환경을 정의합니다.
@@ -57,6 +85,14 @@ DB_PATH=data/nba.sqlite
 MEMORY_DB_PATH=result/memory.sqlite
 CHAT_DB_PATH=result/chat.sqlite
 FEWSHOT_CANDIDATE_LIMIT=3
+```
+
+### 로컬 설치
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## 실행 방법
@@ -79,8 +115,9 @@ python -m src.db.schema_dump
 
 ## Streamlit UI
 
-- **모델 선택**: `gpt-4.1-mini` 기본값, `gpt-4.1-nano`/`gpt-4o-mini` 선택 가능
-- **최종 답변 모델**: `FINAL_ANSWER_MODEL`로 고정(기본 `gpt-4.1-nano`)
+- **중간 에이전트 모델 선택**: 라우팅/플래닝/few-shot/SQL 생성에 사용할 모델(`OPENAI_MODEL`)을 선택합니다.
+  - 기본값: `gpt-4.1-mini` (선택지: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`)
+- **최종 답변 모델**: 조회가 끝난 뒤 요약/최종 응답은 `FINAL_ANSWER_MODEL`로 고정됩니다(기본 `gpt-4.1-nano`).
 - **Dataset Info**: 데이터셋 요약/출처/테이블/지표 목록 표시
 - **추천 질의**: 클릭으로 빠른 질문 실행
 - **결과 요약 카드**: Rows/Season/Metric/Top-K 표시
@@ -139,6 +176,7 @@ python src/test/test_chain_unit.py
 - 채팅 목록은 `CHAT_DB_PATH` SQLite에 저장됩니다.
 - 첫 질문 입력 후 제목을 한 번 자동 생성하고 이후 고정합니다.
 - 채팅별로 메시지/표/메타가 저장되어 새로고침 없이 복원됩니다.
+- 로컬 개발 기본 사용자 ID는 `developer`로 고정되어 있습니다(`src/app.py`의 `DEFAULT_USER_ID`).
 
 ## 로컬 SQLite 가이드 (Agent 메모리 / Chat 히스토리)
 
@@ -174,6 +212,41 @@ SQL:
 SELECT ...
 LIMIT 50;
 ```
+
+## 메트릭(metrics.yaml) 확장 가이드
+
+`src/metrics/metrics.yaml`의 **1개 항목 = 1개 지표/질의 템플릿**입니다. 현재 총 **244개** 메트릭이 있고, 모두 `examples`를 포함합니다.
+
+필수 필드(권장 포함):
+
+- `name`: 내부 식별자(snake_case)
+- `aliases`: 사용자가 말하는 표현(한글/영문/약어 포함)
+- `description_ko`: “무엇을/어떻게/주의점” 2~4문장
+- `formula_ko`: 수식 또는 규칙 요약 1줄
+- `required_tables`, `required_columns`: 최소 범위(컨텍스트 압축에 사용)
+- `sql_template`: SQLite 기준 템플릿(기본 `LIMIT {limit}`)
+- `examples`: 최소 1개(`question` + `params` 권장)
+
+플레이스홀더 예시:
+
+- `limit` (기본 200), `season_id`/`season_year`, `team_abbreviation`, `player_name`, `game_id`, `start_date`/`end_date` 등
+- 템플릿에 쓰인 플레이스홀더는 `examples[].params`로 채우는 걸 권장합니다(미지정 시 검증 스크립트 기본값으로 보정).
+
+## SQL 템플릿 자동 검증(개발용)
+
+`metrics.yaml`을 크게 늘릴 때, “문법/컬럼명/조인 누락” 때문에 런타임에서 터지는 일이 가장 많아서 검증 스크립트를 함께 둡니다.
+
+```bash
+python src/validate_metrics.py \
+  --db data/nba.sqlite \
+  --metrics src/metrics/metrics.yaml \
+  --log-dir log \
+  --require-examples
+```
+
+- 출력 예: `OK=244, FAIL=0, SKIP=0`
+- 멀티스텝 템플릿(`-- step1`, `-- step2` …)은 스텝별로 분리해 실행합니다.
+- 실패 시 `log/metrics_validate_*.log`를 확인해서 어떤 메트릭/예시에서 깨졌는지 바로 추적할 수 있습니다.
 
 ## Agent 아키텍처
 
@@ -239,7 +312,7 @@ flowchart TD
 
 ## 출력/로그
 
-- `log/` 폴더에 실행 로그를 JSON 형태로 남깁니다(깃 추적 제외).
+- `log/` 폴더에 실행 로그를 **JSONL**로 남깁니다(기본 파일명: `log/log_YYYYMMDD.json`).
 - 테스트 스크립트 로그도 `log/test_agent_flow_YYYYMMDDhhmmss.log` 형식으로 저장됩니다.
 
 ## 참고
