@@ -11,6 +11,11 @@ data/**
 # 차트 이미지
 result/plot/
 
+# 생성/검증 캐시(중간 산출물)
+result/*_cache.json
+result/generated_*_metrics.yaml
+src/validate_metrics.py
+
 # 로그 파일
 log/*.log
 
