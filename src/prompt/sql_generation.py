@@ -103,8 +103,8 @@ SQLite용 SQL을 생성하라.
   - 오류가 있으면 수정한 SQL로 다시 시도한 뒤 최종 SQL만 출력한다.
 
 column_parser 입력/출력 요약:
-- 입력: { "sql": "..." }
-- 출력: { "tables": [...], "unknown_tables": [...], "unknown_columns": {...}, "is_valid": true|false }
+- 입력: {{ "sql": "..." }}
+- 출력: {{ "tables": [...], "unknown_tables": [...], "unknown_columns": {{...}}, "is_valid": true|false }}
 - unknown_tables/unknown_columns가 있으면 즉시 수정 후 재생성한다.
 
 출력:
