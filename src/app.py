@@ -235,10 +235,10 @@ class StreamlitChatApp:
             self._maybe_set_chat_title(chat_store, title_generator, user_id, st.session_state.active_chat_id, user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
 
-            with st.chat_message("user"):
+            with st.chat_message("user", avatar=self._get_chat_avatar("user")):
                 st.write(user_text)
 
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar=self._get_chat_avatar("assistant")):
                 with Timer() as timer:
                     result = self._run_agent_with_thinking(scene, user_text)
                 self._handle_agent_result(
@@ -642,7 +642,10 @@ class StreamlitChatApp:
         active_chat_id = str(st.session_state.get("active_chat_id") or "unknown")
 
         for idx, message in enumerate(messages):
-            with st.chat_message(message["role"]):
+            with st.chat_message(
+                message["role"],
+                avatar=self._get_chat_avatar(str(message.get("role", ""))),
+            ):
                 dataframe = message.get("dataframe")
                 error = message.get("error")
                 error_detail = message.get("error_detail")
@@ -722,6 +725,26 @@ class StreamlitChatApp:
                         st.write(error)
                         if error_detail:
                             st.write(error_detail)
+
+    def _get_chat_avatar(self, role: str) -> str | None:
+        """
+        채팅 역할에 맞는 아바타를 반환한다.
+
+        Args:
+            role: 메시지 역할.
+
+        Returns:
+            아바타 문자열(없으면 None).
+
+        Raises:
+            예외 없음.
+        """
+
+        if role == "assistant":
+            return "🤖"
+        if role == "user":
+            return "🧑🏻‍💻"
+        return None
 
     def _handle_agent_result(
         self,
@@ -1198,8 +1221,11 @@ class StreamlitChatApp:
             예외 없음.
         """
 
-        st.markdown('<span class="thinking-pill">Thinking</span>', unsafe_allow_html=True)
-        with st.expander("Details", expanded=False):
+        status_label = "Thinking"
+        if thinking_status:
+            has_running = any(value == THINKING_STATUS_RUNNING for value in thinking_status.values())
+            status_label = "⏳ Thinking" if has_running else "✅ Thinking"
+        with st.expander(status_label, expanded=False):
 
             def _render_step(label: str, status: str, data: dict[str, object] | None) -> None:
                 icon = "✅" if status == THINKING_STATUS_DONE else "⏳"
@@ -1948,15 +1974,6 @@ html, body, [class*="css"] {
   font-weight: 600;
 }
 
-.thinking-pill {
-  display: inline-block;
-  margin: 0.4rem 0 0.6rem;
-  padding: 0.2rem 0.6rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
 .stButton>button {
   border-radius: 999px;
   font-weight: 600;
@@ -2009,6 +2026,23 @@ section[data-testid="stSidebar"] button {
 section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
   min-width: 36px;
   padding: 0.2rem 0.35rem;
+  line-height: 1;
+}
+
+[data-testid="stChatMessageAvatar"] {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+}
+
+[data-testid="stChatMessageAvatar"] > div {
+  width: 52px;
+  height: 52px;
+}
+
+[data-testid="stChatMessageAvatar"] span,
+[data-testid="stChatMessageAvatar"] img {
+  font-size: 1.35rem !important;
   line-height: 1;
 }
 
