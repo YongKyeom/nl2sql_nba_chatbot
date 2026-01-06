@@ -11,6 +11,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlglot import parse_one
 
@@ -23,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.agent.memory import ConversationMemory
 from src.agent.scene import build_scene, ChatbotScene
 from src.config import AppConfig, load_config
+from src.db.history_store import ChatHistoryStore
 
 
 class _Tee:
@@ -206,6 +208,10 @@ if __name__ == "__main__":
         # 3) 대화 메모리/Scene 초기화(멀티턴 유지)
         config = load_config()
         scene = _build_scene(config)
+        history_store = ChatHistoryStore(config.history_db_path)
+        run_id = uuid4().hex[:8]
+        user_id = f"test_{run_id}"
+        chat_id = f"chat_{run_id}"
 
         # 4) 콘솔과 로그 파일에 동시에 출력한다.
         with log_path.open("w", encoding="utf-8") as log_file:
@@ -220,11 +226,30 @@ if __name__ == "__main__":
                     print("\n=== 질문 ===")
                     print(query)
                     print("\n=== 답변 ===")
+                    history_store.add_message(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        role="user",
+                        content=query,
+                    )
                     result = await run_live_query(query, scene=scene, stream_output=True)
                     if not result.get("streamed_output"):
                         print(result.get("final_answer"))
                     _print_debug_and_sql(result)
+                    history_store.add_message(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=str(result.get("final_answer") or ""),
+                        meta={"route": result.get("route"), "planned_slots": result.get("planned_slots")},
+                    )
+                    summary_text = scene.memory.short_term.summary_text
+                    if summary_text:
+                        history_store.set_summary(user_id, chat_id, summary_text)
                 print()
+                print("\n=== History (LangChain) ===")
+                for msg in history_store.to_langchain_messages(user_id, chat_id):
+                    msg.pretty_print()
             finally:
                 sys.stdout = original_stdout
                 sys.stderr = original_stderr

@@ -49,6 +49,7 @@ class RoutingContext:
 
     Args:
         user_message: 사용자 입력.
+        conversation_context: 최근 대화 컨텍스트.
         has_previous: 이전 결과 존재 여부.
         last_result_schema: 이전 결과 컬럼 목록.
         last_sql: 직전 SQL.
@@ -57,6 +58,7 @@ class RoutingContext:
     """
 
     user_message: str
+    conversation_context: str
     has_previous: bool
     last_result_schema: list[str] | None
     last_sql: str | None
@@ -233,6 +235,7 @@ class RouterLLM:
 
         prompt = ROUTER_PROMPT.format(
             user_message=context.user_message,
+            conversation_context=context.conversation_context,
             has_previous=context.has_previous,
             last_result_schema=context.last_result_schema or [],
             last_sql=context.last_sql or "없음",

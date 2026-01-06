@@ -3,6 +3,7 @@
 
 변수:
     user_question: 사용자 질문 원문.
+    conversation_context: 최근 대화 컨텍스트.
     previous_slots: 직전 슬롯 정보(JSON 문자열).
     baseline_slots: 규칙 기반으로 추출한 슬롯 초안(JSON 문자열).
     last_entities: 직전 결과에서 추출된 엔티티(JSON 문자열).
@@ -62,6 +63,9 @@ PLANNER_PROMPT = dedent(
 - 출력은 JSON만, 설명/코드블록 금지.
 - filters는 반드시 dict 형태로 유지.
 - baseline_slots에서 확실한 값은 유지하되, 질문과 충돌하면 질문을 우선한다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_question}

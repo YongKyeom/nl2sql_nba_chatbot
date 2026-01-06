@@ -4,6 +4,7 @@
 변수:
     user_message: 사용자 질문 원문.
     clarify_question: 확인 질문.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -38,6 +39,9 @@ CLARIFY_PROMPT = dedent(
 - 확인 질문은 별도 섹션으로 명확히 안내하며 clarify_question을 그대로 사용한다.
 - 출력에 <output> 같은 태그를 포함하지 않는다.
 - <...> 표시는 실제 내용으로 치환하고 그대로 출력하지 않는다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_message}

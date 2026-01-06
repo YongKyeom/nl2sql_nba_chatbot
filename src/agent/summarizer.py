@@ -22,12 +22,14 @@ class SummaryInput:
         sql: 실행 SQL.
         result_preview: 결과 미리보기.
         applied_filters: 적용 조건 요약.
+        conversation_context: 최근 대화 컨텍스트.
     """
 
     user_question: str
     sql: str
     result_preview: list[dict[str, object]]
     applied_filters: str
+    conversation_context: str | None = None
 
 
 class Summarizer:
@@ -65,6 +67,7 @@ class Summarizer:
             sql=payload.sql,
             result_preview=json.dumps(payload.result_preview, ensure_ascii=False),
             applied_filters=payload.applied_filters,
+            conversation_context=payload.conversation_context or "없음",
         )
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},

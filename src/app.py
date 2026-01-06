@@ -28,6 +28,7 @@ from src.chart.renderer import ChartRenderer
 from src.chart.types import ChartSpec, SUPPORTED_CHART_TYPES
 from src.config import AppConfig, load_config
 from src.db.chat_store import ChatSession, ChatStore
+from src.db.history_store import ChatHistoryStore
 from src.utils.logging import JsonlLogger
 from src.utils.markdown import records_to_markdown
 from src.utils.time import Timer
@@ -168,9 +169,10 @@ class StreamlitChatApp:
         # 2) 사용자/채팅 세션 준비: 채팅 목록과 세션 복원을 선행한다.
         user_id = self._get_user_id()
         chat_store = self._ensure_chat_store()
+        history_store = self._ensure_history_store()
         active_chat_id = self._ensure_active_chat(chat_store, user_id)
         st.session_state.chat_sessions = chat_store.list_sessions(user_id)
-        selected_chat_id = self._render_chat_sidebar(chat_store, user_id, active_chat_id)
+        selected_chat_id = self._render_chat_sidebar(chat_store, history_store, user_id, active_chat_id)
 
         # 3) 설정/모델 UI: 모델과 Temperature 변경을 먼저 반영한다.
         st.sidebar.divider()
@@ -195,7 +197,8 @@ class StreamlitChatApp:
         if selected_chat_id != st.session_state.loaded_chat_id:
             st.session_state.active_chat_id = selected_chat_id
             st.session_state.messages = self._load_chat_messages(chat_store, user_id, selected_chat_id)
-            self._restore_memory_from_messages(scene, st.session_state.messages)
+            summary_text = history_store.get_summary(user_id, selected_chat_id)
+            self._restore_memory_from_messages(scene, st.session_state.messages, summary_text=summary_text)
             st.session_state.loaded_chat_id = selected_chat_id
 
         # 5) 데이터/유틸 UI: 데이터셋 정보와 스키마 덤프를 제공한다.
@@ -237,6 +240,9 @@ class StreamlitChatApp:
             chat_store.add_message(
                 user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text
             )
+            history_store.add_message(
+                user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text
+            )
             self._maybe_set_chat_title(chat_store, title_generator, user_id, st.session_state.active_chat_id, user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
 
@@ -254,6 +260,7 @@ class StreamlitChatApp:
                     chart_generator=chart_generator,
                     chart_renderer=chart_renderer,
                     chat_store=chat_store,
+                    history_store=history_store,
                     user_id=user_id,
                     chat_id=st.session_state.active_chat_id,
                     memory=scene.memory,
@@ -289,6 +296,8 @@ class StreamlitChatApp:
             st.session_state.show_dataset_info = False
         if "chat_store" not in st.session_state:
             st.session_state.chat_store = None
+        if "history_store" not in st.session_state:
+            st.session_state.history_store = None
         if "title_generator" not in st.session_state:
             st.session_state.title_generator = None
         if "chart_generator" not in st.session_state:
@@ -346,6 +355,24 @@ class StreamlitChatApp:
         if st.session_state.chat_store is None:
             st.session_state.chat_store = ChatStore(self._config.chat_db_path)
         return st.session_state.chat_store
+
+    def _ensure_history_store(self) -> ChatHistoryStore:
+        """
+        ChatHistoryStore를 세션에 준비한다.
+
+        Returns:
+            ChatHistoryStore.
+
+        Side Effects:
+            st.session_state.history_store를 갱신할 수 있다.
+
+        Raises:
+            예외 없음.
+        """
+
+        if st.session_state.history_store is None:
+            st.session_state.history_store = ChatHistoryStore(self._config.history_db_path)
+        return st.session_state.history_store
 
     def _ensure_title_generator(self, model: str) -> TitleGenerator:
         """
@@ -444,12 +471,19 @@ class StreamlitChatApp:
             st.session_state.active_chat_id = active_chat_id
         return active_chat_id
 
-    def _render_chat_sidebar(self, chat_store: ChatStore, user_id: str, active_chat_id: str) -> str:
+    def _render_chat_sidebar(
+        self,
+        chat_store: ChatStore,
+        history_store: ChatHistoryStore,
+        user_id: str,
+        active_chat_id: str,
+    ) -> str:
         """
         사이드바 채팅 목록을 렌더링한다.
 
         Args:
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             active_chat_id: 현재 활성 채팅 ID.
 
@@ -494,18 +528,26 @@ class StreamlitChatApp:
             label = f"{prefix} {session.title}"
             if cols[0].button(label, key=f"chat_select_{session.chat_id}", use_container_width=True):
                 selected = session.chat_id
-            self._render_chat_actions(cols[1], chat_store, user_id, session)
+            self._render_chat_actions(cols[1], chat_store, history_store, user_id, session)
 
         st.session_state.active_chat_id = selected
         return selected
 
-    def _render_chat_actions(self, column: Any, chat_store: ChatStore, user_id: str, session: ChatSession) -> None:
+    def _render_chat_actions(
+        self,
+        column: Any,
+        chat_store: ChatStore,
+        history_store: ChatHistoryStore,
+        user_id: str,
+        session: ChatSession,
+    ) -> None:
         """
         채팅 항목의 액션 메뉴를 렌더링한다.
 
         Args:
             column: 렌더링할 컬럼.
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             session: 채팅 세션.
 
@@ -542,6 +584,7 @@ class StreamlitChatApp:
             if st.button("삭제", key=f"delete_chat_{chat_id}"):
                 if confirm:
                     chat_store.delete_session(user_id, chat_id)
+                    history_store.delete_session(user_id, chat_id)
                     st.session_state.active_chat_id = None
                     st.session_state.loaded_chat_id = None
                     st.session_state.messages = []
@@ -762,6 +805,7 @@ class StreamlitChatApp:
         chart_generator: ChartGenerator,
         chart_renderer: ChartRenderer,
         chat_store: ChatStore,
+        history_store: ChatHistoryStore,
         user_id: str,
         chat_id: str,
         memory: ConversationMemory | None = None,
@@ -778,6 +822,7 @@ class StreamlitChatApp:
             chart_generator: 차트 생성기.
             chart_renderer: 차트 렌더러.
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             chat_id: 채팅 ID.
             memory: 대화 메모리(스트리밍 응답 보강용).
@@ -905,6 +950,15 @@ class StreamlitChatApp:
             content=final_answer,
             meta=chat_meta,
         )
+        history_store.add_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            role="assistant",
+            content=final_answer,
+            meta={"route": route, "planned_slots": planned_slots},
+        )
+        if memory and memory.short_term.summary_text:
+            history_store.set_summary(user_id, chat_id, memory.short_term.summary_text)
 
         if show_thinking:
             self._render_thinking_panel(
@@ -2247,13 +2301,20 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
             hydrated.append(message)
         return hydrated
 
-    def _restore_memory_from_messages(self, scene: ChatbotScene, messages: list[dict[str, object]]) -> None:
+    def _restore_memory_from_messages(
+        self,
+        scene: ChatbotScene,
+        messages: list[dict[str, object]],
+        *,
+        summary_text: str | None = None,
+    ) -> None:
         """
         저장된 메시지로 대화 메모리를 복원한다.
 
         Args:
             scene: ChatbotScene.
             messages: 메시지 리스트.
+            summary_text: 저장된 대화 요약(없으면 None).
 
         Side Effects:
             단기 메모리를 초기화하고 재구성한다.
@@ -2264,6 +2325,7 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
 
         memory = scene.memory
         memory.short_term.reset()
+        memory.short_term.summary_text = summary_text
 
         for message in messages:
             role = message.get("role")
@@ -2291,6 +2353,11 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
                 memory.short_term.last_result = dataframe
                 memory.short_term.last_result_schema = list(dataframe.columns)
                 memory.short_term.last_slots = planned_slots
+
+        if summary_text:
+            keep_turns = memory.summary_keep_turns
+            if keep_turns > 0:
+                memory.short_term.turns = memory.short_term.turns[-keep_turns:]
 
     def _maybe_set_chat_title(
         self,

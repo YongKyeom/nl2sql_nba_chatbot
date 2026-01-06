@@ -3,6 +3,7 @@
 
 변수:
     user_message: 사용자 질문.
+    conversation_context: 최근 대화 컨텍스트.
     has_previous: 이전 결과 존재 여부.
     last_result_schema: 이전 결과 컬럼 목록.
     last_sql: 직전 SQL.
@@ -31,6 +32,9 @@ ROUTER_PROMPT = dedent(
 
 출력 형식(필수):
 {{"route":"general|direct|reuse|sql_required","reason":"판단 근거"}}
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_message}

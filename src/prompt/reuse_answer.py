@@ -5,6 +5,7 @@
     user_message: 사용자 질문 원문.
     reuse_summary: 후처리 요약.
     result_markdown: 결과 마크다운 테이블.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -51,6 +52,9 @@ REUSE_PROMPT = dedent(
 - 각 섹션 제목은 반드시 단독 줄로 출력한다.
 - 섹션 제목과 내용 사이에 빈 줄 1줄을 둔다.
 - 섹션과 섹션 사이에 빈 줄 1줄을 둔다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_message}

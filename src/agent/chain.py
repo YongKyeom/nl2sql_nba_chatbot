@@ -11,7 +11,6 @@ from typing import Any, Literal, TypedDict
 import pandas as pd
 from langgraph.graph import END, StateGraph
 
-from src.agent.contextualizer import build_context_hint
 from src.agent.fewshot_generator import (
     FewshotGenerationInput,
     FewshotGenerator,
@@ -282,6 +281,7 @@ async def _router_node(state: AgentState, deps: AgentDependencies) -> AgentState
 
     context = RoutingContext(
         user_message=state["user_message"],
+        conversation_context=deps.memory.build_conversation_context(),
         has_previous=deps.memory.last_result is not None,
         last_result_schema=deps.memory.last_result_schema,
         last_sql=deps.memory.last_sql,
@@ -315,10 +315,18 @@ async def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> Age
 
     try:
         if metric is None:
-            response = await deps.responder.compose_missing_metric(state["user_message"], stream=True)
+            response = await deps.responder.compose_missing_metric(
+                state["user_message"],
+                conversation_context=deps.memory.build_conversation_context(),
+                stream=True,
+            )
             return _build_answer_payload(response)
 
-        response = await deps.responder.compose_direct(metric, stream=True)
+        response = await deps.responder.compose_direct(
+            metric,
+            conversation_context=deps.memory.build_conversation_context(),
+            stream=True,
+        )
         return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -341,7 +349,11 @@ async def _general_answer_node(state: AgentState, deps: AgentDependencies) -> Ag
     """
 
     try:
-        response = await deps.responder.compose_general(state["user_message"], stream=True)
+        response = await deps.responder.compose_general(
+            state["user_message"],
+            conversation_context=deps.memory.build_conversation_context(),
+            stream=True,
+        )
         return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -381,6 +393,7 @@ async def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
             state["user_message"],
             reuse.summary,
             preview_markdown,
+            conversation_context=deps.memory.build_conversation_context(),
             stream=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -422,6 +435,7 @@ async def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         state["user_message"],
         previous,
         previous_entities=deps.memory.last_entities,
+        conversation_context=deps.memory.build_conversation_context(),
         max_retries=5,
     )
     planned_slots = plan_output.slots.model_dump()
@@ -469,6 +483,7 @@ async def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentStat
         response_text = await deps.responder.compose_clarify(
             state["user_message"],
             clarify_question,
+            conversation_context=deps.memory.build_conversation_context(),
             stream=True,
         )
         return _build_answer_payload(response_text)
@@ -510,7 +525,7 @@ async def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentStat
             planned_slots=planned_slots,
             candidate_metrics=candidate_metrics,
             schema_context=full_schema_context,
-            context_hint=build_context_hint(deps.memory),
+            context_hint="없음",
         )
     )
     schema_context = _build_schema_context_from_selection(selection, deps.schema_store)
@@ -524,7 +539,7 @@ async def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentStat
                 planned_slots=planned_slots,
                 candidate_metrics=candidate_metrics,
                 schema_context=schema_context,
-                context_hint=build_context_hint(deps.memory),
+                context_hint="없음",
                 target_count=target_count,
             )
         )
@@ -571,7 +586,7 @@ async def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> Agen
                     metric_context=deps.registry.build_sql_context(metric),
                     schema_context=state.get("schema_context") or deps.schema_store.build_context(),
                     last_sql=deps.memory.last_sql,
-                    context_hint=build_context_hint(deps.memory),
+                    context_hint="없음",
                     fewshot_examples=state.get("fewshot_examples"),
                 )
             )
@@ -678,7 +693,7 @@ async def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies
                 metric_contexts=metric_contexts,
                 schema_context=schema_context,
                 last_sql=deps.memory.last_sql,
-                context_hint=build_context_hint(deps.memory),
+                context_hint="없음",
                 fewshot_examples=state.get("fewshot_examples"),
             )
         )
@@ -760,7 +775,7 @@ async def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentS
                         metric_context=deps.registry.build_sql_context(metric),
                         schema_context=state.get("schema_context") or deps.schema_store.build_context(),
                         last_sql=deps.memory.last_sql,
-                        context_hint=build_context_hint(deps.memory),
+                        context_hint="없음",
                         fewshot_examples=state.get("fewshot_examples"),
                     )
                 )
@@ -1281,6 +1296,7 @@ async def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentSt
                 sql=state.get("sql", ""),
                 result_preview=preview_dataframe(dataframe, max_rows=10),
                 applied_filters=applied_filters,
+                conversation_context=deps.memory.build_conversation_context(),
             ),
             stream=True,
         )
@@ -1849,7 +1865,7 @@ async def _build_multi_step_plan_llm(
             user_question=user_message,
             planned_slots=planned_slots,
             schema_context=schema_context,
-            context_hint=build_context_hint(memory),
+            context_hint="없음",
         )
     )
 

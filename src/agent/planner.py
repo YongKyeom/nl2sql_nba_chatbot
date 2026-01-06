@@ -96,27 +96,41 @@ class Planner:
         self._max_tool_calls = max(1, max_tool_calls)
         self._client = LLMOperator() if self._enable_tools else None
 
-    async def plan(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
+    async def plan(
+        self,
+        user_message: str,
+        previous_slots: PlannerSlots | None,
+        *,
+        conversation_context: str | None = None,
+    ) -> PlannerOutput:
         """
         질의에서 슬롯을 추출한다.
 
         Args:
             user_message: 사용자 입력.
             previous_slots: 직전 슬롯(없으면 None).
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             PlannerOutput.
         """
 
-        return self._plan_rule_based(user_message, previous_slots)
+        return self._plan_rule_based(user_message, previous_slots, conversation_context=conversation_context)
 
-    def _plan_rule_based(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
+    def _plan_rule_based(
+        self,
+        user_message: str,
+        previous_slots: PlannerSlots | None,
+        *,
+        conversation_context: str | None = None,
+    ) -> PlannerOutput:
         """
         규칙 기반으로 슬롯을 추출한다.
 
         Args:
             user_message: 사용자 입력.
             previous_slots: 직전 슬롯.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             PlannerOutput.
@@ -169,6 +183,7 @@ class Planner:
         previous_slots: PlannerSlots | None,
         *,
         previous_entities: dict[str, list[str]] | None = None,
+        conversation_context: str | None = None,
         max_retries: int = 5,
     ) -> PlannerOutput:
         """
@@ -178,13 +193,14 @@ class Planner:
             user_message: 사용자 입력.
             previous_slots: 직전 슬롯(없으면 None).
             max_retries: 최대 보정 시도 횟수.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             PlannerOutput.
         """
 
         if max_retries < 1:
-            return await self.plan(user_message, previous_slots)
+            return await self.plan(user_message, previous_slots, conversation_context=conversation_context)
 
         tool_output: PlannerOutput | None = None
         metric_tool_used = False
@@ -194,7 +210,12 @@ class Planner:
 
         if self._enable_tools:
             try:
-                tool_output = await self._plan_with_tools(user_message, previous_slots, previous_entities)
+                tool_output = await self._plan_with_tools(
+                    user_message,
+                    previous_slots,
+                    previous_entities,
+                    conversation_context=conversation_context,
+                )
             except Exception:
                 tool_output = None
 
@@ -207,7 +228,7 @@ class Planner:
             if tool_output and tool_output.slots.metric and self._registry.get(tool_output.slots.metric):
                 return tool_output
 
-        output = self._plan_rule_based(user_message, previous_slots)
+        output = self._plan_rule_based(user_message, previous_slots, conversation_context=conversation_context)
         output.metric_tool_used = metric_tool_used
         output.entity_tool_used = entity_tool_used
         if metric_candidates:
@@ -234,7 +255,7 @@ class Planner:
         if previous_slots is not None:
             # 이전 슬롯이 영향을 줬을 가능성이 있어 빈 상태로 재시도한다.
             for _ in range(max_retries):
-                retry_output = await self.plan(user_message, None)
+                retry_output = await self.plan(user_message, None, conversation_context=conversation_context)
                 metric_name = retry_output.slots.metric
                 if metric_name and self._registry.get(metric_name):
                     return retry_output
@@ -254,6 +275,8 @@ class Planner:
         user_message: str,
         previous_slots: PlannerSlots | None,
         previous_entities: dict[str, list[str]] | None,
+        *,
+        conversation_context: str | None = None,
     ) -> PlannerOutput:
         """
         LLM과 Tool을 활용해 슬롯을 보강한다.
@@ -262,12 +285,13 @@ class Planner:
             user_message: 사용자 입력.
             previous_slots: 직전 슬롯.
             previous_entities: 직전 엔티티 정보.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             PlannerOutput.
         """
 
-        baseline = self._plan_rule_based(user_message, previous_slots)
+        baseline = self._plan_rule_based(user_message, previous_slots, conversation_context=conversation_context)
 
         metric_candidates: list[dict[str, Any]] = []
         entity_resolution: dict[str, Any] | None = None
@@ -276,6 +300,7 @@ class Planner:
 
         prompt = PLANNER_PROMPT.format(
             user_question=user_message,
+            conversation_context=conversation_context or "없음",
             previous_slots=json.dumps(previous_slots.model_dump() if previous_slots else {}, ensure_ascii=False),
             baseline_slots=json.dumps(baseline.slots.model_dump(), ensure_ascii=False),
             last_entities=json.dumps(previous_entities or {}, ensure_ascii=False),
