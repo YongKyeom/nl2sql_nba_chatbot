@@ -39,6 +39,7 @@ MULTI_STEP_SQL_PROMPT = dedent(
   - steps/overrides에 top_k가 있으면 그 값을 우선한다.
   - 별도 지정이 없으면 LIMIT 200을 사용한다.
 - 출력은 SQL만(설명/마크다운/JSON 금지).
+- column_parser 도구가 제공되면 최종 SQL을 검증하고 오류가 없도록 보정한다.
 
 출력 기대:
 - step1은 관중/Top-K처럼 "대상 집합을 만드는" 역할이 많다.

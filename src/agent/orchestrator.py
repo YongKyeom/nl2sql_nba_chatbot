@@ -16,6 +16,7 @@ from src.agent.responder import Responder, ResponderConfig
 from src.agent.router import RouterLLM
 from src.agent.sql_generator import SQLGenerator
 from src.agent.summarizer import Summarizer
+from src.agent.tools import ColumnParser, EntityResolver, MetricSelector
 from src.agent.validator import ResultValidator
 from src.config import AppConfig, load_config
 from src.db.schema_dump import dump_schema, SchemaDumpPaths
@@ -96,6 +97,13 @@ class AgentOrchestrator:
         self.schema_store.ensure_loaded()
 
         # 2) 의존성 구성
+        metric_selector = MetricSelector(self.registry)
+        entity_resolver = EntityResolver(config.db_path)
+        column_parser = ColumnParser(
+            model=resolved_options.model,
+            temperature=0.0,
+            schema_store=self.schema_store,
+        )
         self._dependencies: AgentDependencies = AgentDependencies(
             registry=self.registry,
             schema_store=self.schema_store,
@@ -103,11 +111,23 @@ class AgentOrchestrator:
             responder=Responder(
                 ResponderConfig(model=final_answer_model, temperature=resolved_options.responder_temperature)
             ),
-            planner=Planner(self.registry),
-            fewshot_generator=FewshotGenerator(model=resolved_options.model, temperature=0.2),
+            planner=Planner(
+                self.registry,
+                model=resolved_options.model,
+                temperature=0.0,
+                metric_selector=metric_selector,
+                entity_resolver=entity_resolver,
+                enable_tools=True,
+            ),
+            fewshot_generator=FewshotGenerator(model=resolved_options.model, temperature=0.0),
             fewshot_candidate_limit=config.fewshot_candidate_limit,
             multi_step_planner=MultiStepPlanner(model=resolved_options.model, temperature=0.0),
-            sql_generator=SQLGenerator(model=resolved_options.model, temperature=resolved_options.temperature),
+            sql_generator=SQLGenerator(
+                model=resolved_options.model,
+                temperature=resolved_options.temperature,
+                column_parser=column_parser,
+                max_tool_attempts=3,
+            ),
             guard=SQLGuard(config.schema_json_path),
             validator=ResultValidator(),
             sqlite_client=SQLiteClient(config.db_path),

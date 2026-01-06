@@ -11,6 +11,7 @@ from src.prompt.multi_step_sql import MULTI_STEP_SQL_PROMPT
 from src.prompt.sql_generation import SQL_FEWSHOT_EXAMPLES, SQL_GENERATION_PROMPT
 from src.prompt.sql_repair import SQL_REPAIR_PROMPT
 from src.prompt.system import SYSTEM_PROMPT
+from src.agent.tools.column_parser import ColumnParser
 
 
 @dataclass(frozen=True)
@@ -91,18 +92,51 @@ class SQLGenerator:
     사용해 SQL을 만든다.
     """
 
-    def __init__(self, *, model: str, temperature: float) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        temperature: float,
+        column_parser: ColumnParser | None = None,
+        max_tool_attempts: int = 3,
+    ) -> None:
         """
         SQLGenerator 초기화.
 
         Args:
             model: 사용할 LLM 모델명.
             temperature: 생성 다양성 파라미터.
+            column_parser: 컬럼 파서 도구(없으면 비활성).
+            max_tool_attempts: 컬럼 파서 재시도 횟수.
         """
 
         self._client = OpenAI()
         self._model = model
         self._temperature = temperature
+        self._column_parser = column_parser
+        self._max_tool_attempts = max(1, max_tool_attempts)
+        self._last_column_parser: dict[str, Any] | None = None
+        self._last_column_parser_used: bool = False
+
+    def get_last_column_parser(self) -> dict[str, Any] | None:
+        """
+        직전 컬럼 파서 결과를 반환한다.
+
+        Returns:
+            컬럼 파서 결과(없으면 None).
+        """
+
+        return self._last_column_parser
+
+    def get_last_column_parser_used(self) -> bool:
+        """
+        직전 컬럼 파서 사용 여부를 반환한다.
+
+        Returns:
+            컬럼 파서 사용 여부.
+        """
+
+        return self._last_column_parser_used
 
     def generate_sql(self, payload: SQLGenerationInput) -> str:
         """
@@ -125,16 +159,7 @@ class SQLGenerator:
             context_hint=payload.context_hint or "없음",
             fewshot_examples=fewshot_examples,
         )
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        content = response.choices[0].message.content or ""
-        return _strip_code_fence(content)
+        return self._generate_with_column_parser(prompt)
 
     def repair_sql(self, payload: SQLRepairInput) -> str:
         """
@@ -154,16 +179,7 @@ class SQLGenerator:
             metric_context=json.dumps(payload.metric_context, ensure_ascii=False),
             schema_context=payload.schema_context,
         )
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        content = response.choices[0].message.content or ""
-        return _strip_code_fence(content)
+        return self._generate_with_column_parser(prompt)
 
     def generate_multi_step_sql(self, payload: MultiStepSQLInput) -> str:
         """
@@ -187,16 +203,81 @@ class SQLGenerator:
             context_hint=payload.context_hint or "없음",
             fewshot_examples=fewshot_examples,
         )
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        content = response.choices[0].message.content or ""
-        return _strip_code_fence(content)
+        return self._generate_with_column_parser(prompt)
+
+    def _generate_with_column_parser(self, prompt: str) -> str:
+        """
+        컬럼 파서 도구를 포함해 SQL을 생성한다.
+
+        Args:
+            prompt: SQL 생성 프롬프트.
+
+        Returns:
+            SQL 문자열.
+        """
+
+        self._last_column_parser = None
+        self._last_column_parser_used = False
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+
+        if not self._column_parser:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                temperature=self._temperature,
+                messages=messages,
+            )
+            content = response.choices[0].message.content or ""
+            return _strip_code_fence(content)
+
+        tools = [self._column_parser.tool_schema()]
+        sql = ""
+        for attempt in range(self._max_tool_attempts):
+            response = self._client.chat.completions.create(
+                model=self._model,
+                temperature=self._temperature,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            message = response.choices[0].message
+            if message.tool_calls:
+                messages.append(_build_tool_call_message(message))
+                for call in message.tool_calls:
+                    if call.function.name != "column_parser":
+                        continue
+                    args = _safe_json(call.function.arguments)
+                    sql_text = str(args.get("sql") or "")
+                    tool_result = self._column_parser.parse(sql=sql_text)
+                    self._last_column_parser = tool_result
+                    self._last_column_parser_used = True
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(tool_result, ensure_ascii=False),
+                        }
+                    )
+                continue
+
+            content = message.content or ""
+            sql = _strip_code_fence(content)
+            if not sql:
+                messages.append({"role": "user", "content": "SQL을 다시 출력해 주세요. SQL만 반환하세요."})
+                continue
+
+            validation = self._column_parser.parse(sql=sql)
+            self._last_column_parser = validation
+            self._last_column_parser_used = True
+            if validation.get("is_valid") or attempt == self._max_tool_attempts - 1:
+                return sql
+
+            feedback = _build_column_feedback(validation)
+            messages.append({"role": "user", "content": feedback})
+
+        return sql
 
 
 def _strip_code_fence(text: str) -> str:
@@ -216,6 +297,84 @@ def _strip_code_fence(text: str) -> str:
     if cleaned.lower().startswith("sql\n"):
         cleaned = cleaned.split("\n", maxsplit=1)[1].strip()
     return cleaned.strip()
+
+
+def _safe_json(text: str) -> dict[str, Any]:
+    """
+    JSON 문자열을 안전하게 파싱한다.
+
+    Args:
+        text: JSON 문자열.
+
+    Returns:
+        파싱 결과(실패 시 빈 딕셔너리).
+    """
+
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        return {}
+    return {}
+
+
+def _build_tool_call_message(message: Any) -> dict[str, Any]:
+    """
+    tool_calls가 포함된 assistant 메시지를 직렬화한다.
+
+    Args:
+        message: OpenAI 응답 메시지.
+
+    Returns:
+        직렬화된 메시지.
+    """
+
+    tool_calls = []
+    for call in message.tool_calls or []:
+        tool_calls.append(
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+        )
+    payload = {"role": "assistant", "tool_calls": tool_calls}
+    if message.content:
+        payload["content"] = message.content
+    return payload
+
+
+def _build_column_feedback(result: dict[str, Any]) -> str:
+    """
+    컬럼 파서 결과를 SQL 수정 지시로 요약한다.
+
+    Args:
+        result: 컬럼 파서 결과.
+
+    Returns:
+        수정 지시 문자열.
+    """
+
+    unknown_tables = result.get("unknown_tables") or []
+    unknown_columns = result.get("unknown_columns") or {}
+
+    lines = [
+        "ColumnParser 결과에 오류가 있습니다.",
+        "아래 오류를 수정해 SQL을 다시 작성하세요.",
+    ]
+    if unknown_tables:
+        lines.append(f"- 알 수 없는 테이블: {', '.join(sorted(set(unknown_tables)))}")
+    if unknown_columns:
+        for table, cols in unknown_columns.items():
+            if not isinstance(cols, list):
+                continue
+            col_list = ", ".join(cols)
+            lines.append(f"- 테이블 {table}에 없는 컬럼: {col_list}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

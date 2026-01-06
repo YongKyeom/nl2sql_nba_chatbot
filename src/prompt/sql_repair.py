@@ -24,6 +24,7 @@ SQL_REPAIR_PROMPT = dedent(
 - SELECT 문만 허용.
 - 항상 LIMIT 포함.
 - 출력은 SQL만, 코드블록/설명 금지.
+- column_parser 도구가 제공되면 수정 SQL을 검증해 오류가 없도록 보정한다.
 
 출력:
 - SQL 단일 문자열만 반환한다.

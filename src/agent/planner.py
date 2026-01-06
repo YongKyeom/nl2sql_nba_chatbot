@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 from typing import Any, Literal
 
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from src.metrics.registry import MetricsRegistry
+from src.prompt.planner import PLANNER_PROMPT
+from src.prompt.system import SYSTEM_PROMPT
+from src.agent.tools.metric_selector import MetricSelector
+from src.agent.tools.entity_resolver import EntityResolver
 
 
 class PlannerSlots(BaseModel):
@@ -37,10 +43,16 @@ class PlannerOutput(BaseModel):
     Args:
         slots: 추출된 슬롯.
         clarify_question: 확인 질문(없으면 None).
+        metric_candidates: 메트릭 후보 목록.
+        entity_resolution: 엔티티 보강 결과.
     """
 
     slots: PlannerSlots
     clarify_question: str | None = None
+    metric_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    entity_resolution: dict[str, Any] | None = None
+    metric_tool_used: bool = False
+    entity_tool_used: bool = False
 
 
 class Planner:
@@ -50,15 +62,38 @@ class Planner:
     멀티턴에서는 이전 슬롯을 재사용하고, 사용자가 변경한 항목만 덮어쓴다.
     """
 
-    def __init__(self, registry: MetricsRegistry) -> None:
+    def __init__(
+        self,
+        registry: MetricsRegistry,
+        *,
+        model: str | None = None,
+        temperature: float = 0.2,
+        metric_selector: MetricSelector | None = None,
+        entity_resolver: EntityResolver | None = None,
+        enable_tools: bool = False,
+        max_tool_calls: int = 3,
+    ) -> None:
         """
         Planner 초기화.
 
         Args:
             registry: 메트릭 레지스트리.
+            model: 사용할 LLM 모델명(툴 호출용).
+            temperature: LLM temperature.
+            metric_selector: 메트릭 셀렉터 도구.
+            entity_resolver: 엔티티 리졸버 도구.
+            enable_tools: LLM 툴 호출 여부.
+            max_tool_calls: 최대 툴 호출 횟수.
         """
 
         self._registry = registry
+        self._model = model
+        self._temperature = temperature
+        self._metric_selector = metric_selector
+        self._entity_resolver = entity_resolver
+        self._enable_tools = enable_tools and model and metric_selector and entity_resolver
+        self._max_tool_calls = max(1, max_tool_calls)
+        self._client = OpenAI() if self._enable_tools else None
 
     def plan(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
         """
@@ -67,6 +102,20 @@ class Planner:
         Args:
             user_message: 사용자 입력.
             previous_slots: 직전 슬롯(없으면 None).
+
+        Returns:
+            PlannerOutput.
+        """
+
+        return self._plan_rule_based(user_message, previous_slots)
+
+    def _plan_rule_based(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
+        """
+        규칙 기반으로 슬롯을 추출한다.
+
+        Args:
+            user_message: 사용자 입력.
+            previous_slots: 직전 슬롯.
 
         Returns:
             PlannerOutput.
@@ -106,13 +155,19 @@ class Planner:
         slots = PlannerSlots(**updated_slots)
         clarify_question = _build_clarify_question(user_message, slots, self._registry)
 
-        return PlannerOutput(slots=slots, clarify_question=clarify_question)
+        return PlannerOutput(
+            slots=slots,
+            clarify_question=clarify_question,
+            metric_tool_used=False,
+            entity_tool_used=False,
+        )
 
     def plan_with_retry(
         self,
         user_message: str,
         previous_slots: PlannerSlots | None,
         *,
+        previous_entities: dict[str, list[str]] | None = None,
         max_retries: int = 5,
     ) -> PlannerOutput:
         """
@@ -130,7 +185,34 @@ class Planner:
         if max_retries < 1:
             return self.plan(user_message, previous_slots)
 
-        output = self.plan(user_message, previous_slots)
+        tool_output: PlannerOutput | None = None
+        metric_tool_used = False
+        entity_tool_used = False
+        metric_candidates: list[dict[str, Any]] = []
+        entity_resolution: dict[str, Any] | None = None
+
+        if self._enable_tools:
+            try:
+                tool_output = self._plan_with_tools(user_message, previous_slots, previous_entities)
+            except Exception:
+                tool_output = None
+
+            if tool_output:
+                metric_tool_used = tool_output.metric_tool_used
+                entity_tool_used = tool_output.entity_tool_used
+                metric_candidates = tool_output.metric_candidates or []
+                entity_resolution = tool_output.entity_resolution
+
+            if tool_output and tool_output.slots.metric and self._registry.get(tool_output.slots.metric):
+                return tool_output
+
+        output = self._plan_rule_based(user_message, previous_slots)
+        output.metric_tool_used = metric_tool_used
+        output.entity_tool_used = entity_tool_used
+        if metric_candidates:
+            output.metric_candidates = metric_candidates
+        if entity_resolution:
+            output.entity_resolution = entity_resolution
         metric_name = output.slots.metric
 
         # 후보 메트릭을 최대 N개까지 확보해 강제로 보정한다.
@@ -156,9 +238,133 @@ class Planner:
                 if metric_name and self._registry.get(metric_name):
                     return retry_output
 
+            retry_output.metric_tool_used = metric_tool_used
+            retry_output.entity_tool_used = entity_tool_used
+            if metric_candidates:
+                retry_output.metric_candidates = metric_candidates
+            if entity_resolution:
+                retry_output.entity_resolution = entity_resolution
             return retry_output
 
         return output
+
+    def _plan_with_tools(
+        self,
+        user_message: str,
+        previous_slots: PlannerSlots | None,
+        previous_entities: dict[str, list[str]] | None,
+    ) -> PlannerOutput:
+        """
+        LLM과 Tool을 활용해 슬롯을 보강한다.
+
+        Args:
+            user_message: 사용자 입력.
+            previous_slots: 직전 슬롯.
+            previous_entities: 직전 엔티티 정보.
+
+        Returns:
+            PlannerOutput.
+        """
+
+        baseline = self._plan_rule_based(user_message, previous_slots)
+
+        metric_candidates: list[dict[str, Any]] = []
+        entity_resolution: dict[str, Any] | None = None
+        metric_tool_used = False
+        entity_tool_used = False
+
+        prompt = PLANNER_PROMPT.format(
+            user_question=user_message,
+            previous_slots=json.dumps(previous_slots.model_dump() if previous_slots else {}, ensure_ascii=False),
+            baseline_slots=json.dumps(baseline.slots.model_dump(), ensure_ascii=False),
+            last_entities=json.dumps(previous_entities or {}, ensure_ascii=False),
+        )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+
+        tools = [
+            self._metric_selector.tool_schema(),
+            self._entity_resolver.tool_schema(),
+        ]
+        for _ in range(self._max_tool_calls):
+            response = self._client.chat.completions.create(
+                model=self._model,
+                temperature=self._temperature,
+                response_format={"type": "json_object"},
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            message = response.choices[0].message
+            if message.tool_calls:
+                messages.append(_build_tool_call_message(message))
+                for call in message.tool_calls:
+                    args = _safe_json(call.function.arguments)
+                    if call.function.name == "metric_selector":
+                        result = self._metric_selector.select(
+                            query=str(args.get("query") or user_message),
+                            top_k=int(args.get("top_k") or 5),
+                        )
+                        metric_candidates = result.get("candidates", [])
+                        metric_tool_used = True
+                    elif call.function.name == "entity_resolver":
+                        result = self._entity_resolver.resolve(
+                            query=str(args.get("query") or user_message),
+                            previous_entities=previous_entities,
+                            top_k=int(args.get("top_k") or 3),
+                        )
+                        entity_resolution = result
+                        entity_tool_used = True
+                    else:
+                        result = {"error": "unknown_tool"}
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+                continue
+
+            content = (message.content or "").strip()
+            parsed = _parse_planner_json(content)
+            if not parsed:
+                break
+
+            slots_payload = parsed.get("slots")
+            clarify_question = parsed.get("clarify_question")
+            if not isinstance(slots_payload, dict):
+                break
+
+            try:
+                slots = PlannerSlots(**slots_payload)
+            except Exception:
+                break
+
+            if not slots.metric and baseline.slots.metric:
+                slots = PlannerSlots(**{**slots.model_dump(), "metric": baseline.slots.metric})
+
+            return PlannerOutput(
+                slots=slots,
+                clarify_question=str(clarify_question) if clarify_question else None,
+                metric_candidates=metric_candidates,
+                entity_resolution=entity_resolution,
+                metric_tool_used=metric_tool_used,
+                entity_tool_used=entity_tool_used,
+            )
+
+        return PlannerOutput(
+            slots=baseline.slots,
+            clarify_question=baseline.clarify_question,
+            metric_candidates=metric_candidates,
+            entity_resolution=entity_resolution,
+            metric_tool_used=metric_tool_used,
+            entity_tool_used=entity_tool_used,
+        )
 
 
 def _extract_entity_type(text: str) -> Literal["player", "team", "game"] | None:
@@ -267,6 +473,81 @@ def _extract_top_k(text: str) -> int | None:
     match = re.search(r"(\d+)\s*개", text)
     if match:
         return int(match.group(1))
+    return None
+
+
+def _safe_json(text: str) -> dict[str, Any]:
+    """
+    JSON 문자열을 안전하게 파싱한다.
+
+    Args:
+        text: JSON 문자열.
+
+    Returns:
+        파싱 결과(실패 시 빈 딕셔너리).
+    """
+
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        return {}
+    return {}
+
+
+def _build_tool_call_message(message: Any) -> dict[str, Any]:
+    """
+    tool_calls가 포함된 assistant 메시지를 직렬화한다.
+
+    Args:
+        message: OpenAI 응답 메시지.
+
+    Returns:
+        직렬화된 메시지.
+    """
+
+    tool_calls = []
+    for call in message.tool_calls or []:
+        tool_calls.append(
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+        )
+    payload = {"role": "assistant", "tool_calls": tool_calls}
+    if message.content:
+        payload["content"] = message.content
+    return payload
+
+
+def _parse_planner_json(text: str) -> dict[str, Any] | None:
+    """
+    플래너 JSON 응답을 파싱한다.
+
+    Args:
+        text: LLM 응답 문자열.
+
+    Returns:
+        파싱 결과(실패 시 None).
+    """
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```", maxsplit=2)[1].strip()
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+
+    try:
+        payload = json.loads(cleaned)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        return None
     return None
 
 

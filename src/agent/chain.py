@@ -43,11 +43,17 @@ class AgentState(TypedDict, total=False):
     route_reason: str | None
     metric_name: str | None
     planned_slots: dict[str, Any]
+    metric_candidates: list[dict[str, Any]] | None
+    entity_resolution: dict[str, Any] | None
+    metric_tool_used: bool | None
+    entity_tool_used: bool | None
     clarify_question: str | None
     multi_step_plan: MultiStepPlan | None
     fewshot_examples: str | None
     schema_context: str | None
     sql: str | None
+    column_parser: dict[str, Any] | None
+    column_parser_used: bool | None
     result_df: pd.DataFrame | None
     last_result_schema: list[str] | None
     final_answer: str | None
@@ -358,8 +364,14 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     if deps.memory.last_slots:
         previous = PlannerSlots(**deps.memory.last_slots)
 
-    plan_output: PlannerOutput = deps.planner.plan_with_retry(state["user_message"], previous, max_retries=5)
+    plan_output: PlannerOutput = deps.planner.plan_with_retry(
+        state["user_message"],
+        previous,
+        previous_entities=deps.memory.last_entities,
+        max_retries=5,
+    )
     planned_slots = plan_output.slots.model_dump()
+    _apply_entity_resolution(planned_slots, plan_output.entity_resolution)
     _fill_recent_season(planned_slots, state["user_message"], deps.sqlite_client)
     _normalize_season(planned_slots, deps.sqlite_client)
     _apply_reference_filters(planned_slots, state["user_message"], deps.memory)
@@ -380,6 +392,10 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         "planned_slots": planned_slots,
         "clarify_question": plan_output.clarify_question,
         "multi_step_plan": multi_step_plan,
+        "metric_candidates": plan_output.metric_candidates or None,
+        "entity_resolution": plan_output.entity_resolution,
+        "metric_tool_used": plan_output.metric_tool_used,
+        "entity_tool_used": plan_output.entity_tool_used,
     }
 
 
@@ -484,7 +500,7 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
 
     template_sql = _render_metric_template(metric, slots)
     if template_sql:
-        return {"sql": template_sql}
+        return {"sql": template_sql, "column_parser": None, "column_parser_used": False}
 
     try:
         sql = deps.sql_generator.generate_sql(
@@ -504,7 +520,11 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
             "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
             "final_answer": "SQL 생성 중 오류가 발생했습니다.",
         }
-    return {"sql": sql}
+    return {
+        "sql": sql,
+        "column_parser": deps.sql_generator.get_last_column_parser(),
+        "column_parser_used": deps.sql_generator.get_last_column_parser_used(),
+    }
 
 
 def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
@@ -601,7 +621,13 @@ def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> A
             "error": "단일 SQL 합성 결과가 비어 있습니다.",
         }
 
-    return {"sql": sql, "error": None, "error_detail": None}
+    return {
+        "sql": sql,
+        "column_parser": deps.sql_generator.get_last_column_parser(),
+        "column_parser_used": deps.sql_generator.get_last_column_parser_used(),
+        "error": None,
+        "error_detail": None,
+    }
 
 
 def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
@@ -629,13 +655,19 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     results: list[pd.DataFrame] = []
     sql_chunks: list[str] = []
     last_dataframe: pd.DataFrame | None = None
+    column_parser_used = False
 
     for idx, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             return {"error": "멀티 스텝 단계 형식이 올바르지 않습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
         step_question = str(step.get("question") or state["user_message"]).strip()
-        step_output = deps.planner.plan_with_retry(step_question, previous_slots, max_retries=5)
+        step_output = deps.planner.plan_with_retry(
+            step_question,
+            previous_slots,
+            previous_entities=deps.memory.last_entities,
+            max_retries=5,
+        )
         step_slots = step_output.slots.model_dump()
         _apply_step_overrides(step_slots, step, last_dataframe)
 
@@ -660,6 +692,7 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
                         fewshot_examples=state.get("fewshot_examples"),
                     )
                 )
+                column_parser_used = column_parser_used or deps.sql_generator.get_last_column_parser_used()
             except Exception as exc:  # noqa: BLE001
                 return {
                     "error": f"SQL 생성 실패: {exc}",
@@ -697,6 +730,7 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         "sql": final_sql,
         "result_df": final_df,
         "last_result_schema": list(final_df.columns),
+        "column_parser_used": column_parser_used,
         "error": None,
         "error_detail": None,
     }
@@ -1406,6 +1440,10 @@ def _apply_team_name_filter(
     if not isinstance(filters, dict):
         filters = {}
 
+    if filters.get("team_abbreviation") or filters.get("team_abbreviation_in"):
+        planned_slots["filters"] = filters
+        return
+
     lowered = user_message.lower()
     team_catalog = _fetch_team_catalog(sqlite_client)
     if not team_catalog:
@@ -1428,13 +1466,43 @@ def _apply_team_name_filter(
         filters["team_abbreviation_in"] = [matched_abbreviation]
         planned_slots["filters"] = filters
         planned_slots["entity_type"] = "team"
+
+
+def _apply_entity_resolution(
+    planned_slots: dict[str, Any],
+    entity_resolution: dict[str, Any] | None,
+) -> None:
+    """
+    EntityResolver 결과를 슬롯에 반영한다.
+
+    Args:
+        planned_slots: 플래너 슬롯.
+        entity_resolution: 엔티티 보강 결과.
+
+    Returns:
+        None
+    """
+
+    if not entity_resolution:
         return
 
-    if _has_team_reference(user_message):
-        return
+    filters = planned_slots.get("filters", {})
+    if not isinstance(filters, dict):
+        filters = {}
 
-    for key in ("team_abbreviation", "team_abbreviation_in", "team_a", "team_b"):
-        filters.pop(key, None)
+    tool_filters = entity_resolution.get("filters")
+    if isinstance(tool_filters, dict):
+        for key, value in tool_filters.items():
+            if key not in filters:
+                filters[key] = value
+
+    teams = entity_resolution.get("teams")
+    players = entity_resolution.get("players")
+    if teams and planned_slots.get("entity_type") in (None, "", "team"):
+        planned_slots["entity_type"] = "team"
+    if players and planned_slots.get("entity_type") in (None, "", "player"):
+        planned_slots["entity_type"] = "player"
+
     planned_slots["filters"] = filters
 
 
