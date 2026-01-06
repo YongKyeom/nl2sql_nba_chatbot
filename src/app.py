@@ -55,11 +55,11 @@ QUICK_PROMPTS = [
     ("2018 드래프트", "2018 드래프트 전체 픽 리스트 보여줘"),
     ("LAL 최근 5경기", "LAL 최근 5경기 결과 알려줘"),
     ("관중 상위 팀 분석", "관중 수 상위 10개 팀의 시즌 승률/순위를 같이 보여줘"),
-    ("관중 Top10 + 순위", "관중 수 상위 10개 팀의 최근 리그 순위를 분석해줘"),
-    ("관중 Top5 + 승률", "관중 수 상위 5개 팀의 승률과 순위를 비교해줘"),
-    ("관중 Top10 + 성적", "관중 수 상위 10팀의 시즌 성적과 순위를 정리해줘"),
-    ("관중 상위 팀 승패", "관중 수 상위 10개 팀의 승패와 리그 순위를 알려줘"),
-    ("관중 상위 팀 요약", "관중 상위 10개 팀의 시즌 승률을 표로 보여줘"),
+    ("득점/리바운드 교집합", "2022-23 시즌 득점 상위 5팀과 리바운드 상위 5팀의 교집합을 찾아줘"),
+    ("백투백+승률", "2022-23 시즌 백투백 경기 수 상위 10팀과 승률을 같이 보여줘"),
+    ("LAL vs BOS 맞대결", "LAL과 BOS 최근 맞대결 5경기 결과 알려줘"),
+    ("TS/eFG 겹치는 팀", "TS% 상위 5팀과 eFG% 상위 5팀을 비교해 겹치는 팀 알려줘"),
+    ("최근 접전 경기", "접전 경기(5점 이하) 최근 10개 보여줘"),
 ]
 
 DEFAULT_USER_ID = "developer"
@@ -67,10 +67,13 @@ DEFAULT_USER_ID = "developer"
 THINKING_STEP_ORDER = [
     "Routing",
     "Planning",
+    "MetricSelector",
+    "EntityResolver",
     "Multi-step",
     "Schema Select",
     "Few-shot",
     "SQL",
+    "ColumnParser",
     "Direct Answer",
     "General Answer",
     "Reuse Answer",
@@ -93,6 +96,27 @@ class StreamlitChatApp:
 
     Raises:
         예외 없음.
+
+    코드 흐름 요약:
+        1) 세션/테마 초기화
+            - `main()` → `_init_session_state()` → `_apply_custom_theme()`
+        2) 사용자/채팅 준비
+            - `_get_user_id()` → `_ensure_chat_store()` → `_ensure_active_chat()` → `_render_chat_sidebar()`
+        3) 설정 UI 렌더링
+            - `_render_settings()` → `_render_dataset_info()`, `_render_schema_dump()`, `_render_reset_controls()`
+        4) 본문 UI 렌더링
+            - `_render_hero()` → `_render_quick_prompts()` → `_render_messages()`
+        5) 입력 처리/에이전트 실행
+            - `main()`에서 입력 수신 → `_run_agent_with_thinking()` → `_handle_agent_result()`
+            - `_run_agent_with_thinking()` 내부에서 `scene.orchestrator.stream()` 호출
+        6) 응답/차트/로그 반영
+            - `_handle_agent_result()` → `_merge_markdown_table()`/`_render_answer_with_chart()`/`_render_result_summary()`
+            - `JsonlLogger`로 로그 기록
+
+    설계 포인트:
+        - Streamlit/로컬 테스트가 동일한 Scene 경로를 사용하도록 구성한다.
+        - 답변 본문과 표/CSV가 동일한 데이터 소스를 사용하도록 보장한다.
+        - Thinking 패널은 단계별 상태를 토글 형태로 제공해 디버깅 비용을 줄인다.
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -120,6 +144,16 @@ class StreamlitChatApp:
 
         Raises:
             예외 없음.
+
+        코드 흐름:
+            1) `_init_session_state()`로 세션 기본값을 준비한다.
+            2) `_apply_custom_theme()`로 전역 스타일을 적용한다.
+            3) `_get_user_id()`로 사용자 식별자를 결정한다.
+            4) `_ensure_chat_store()`/`_ensure_active_chat()`로 채팅 저장소와 세션을 복원한다.
+            5) `_render_chat_sidebar()`로 좌측 채팅 목록과 제어 UI를 렌더링한다.
+            6) `_render_hero()`/`_render_quick_prompts()`/`_render_messages()`로 본문을 구성한다.
+            7) 입력을 받으면 `_run_agent_with_thinking()`으로 에이전트를 실행한다.
+            8) `_handle_agent_result()`로 결과/차트/로그를 반영한다.
         """
 
         # 1) 상태/테마 초기화: 세션 유지와 UI 일관성을 확보한다.
@@ -132,7 +166,7 @@ class StreamlitChatApp:
         active_chat_id = self._ensure_active_chat(chat_store, user_id)
         selected_chat_id = self._render_chat_sidebar(chat_store, user_id, active_chat_id)
 
-        # 3) 설정/모델 UI: 모델과 온도 변경을 먼저 반영한다.
+        # 3) 설정/모델 UI: 모델과 Temperature 변경을 먼저 반영한다.
         st.sidebar.divider()
         st.sidebar.header("설정")
         st.sidebar.caption(f"DB: {self._config.db_path}")
@@ -607,11 +641,18 @@ class StreamlitChatApp:
                 route = message.get("route")
                 route_reason = message.get("route_reason")
                 planned_slots = message.get("planned_slots")
+                metric_tool_used = message.get("metric_tool_used")
+                entity_tool_used = message.get("entity_tool_used")
+                metric_candidates = message.get("metric_candidates")
+                entity_resolution = message.get("entity_resolution")
                 multi_step_plan = message.get("multi_step_plan")
                 last_result_schema = message.get("last_result_schema")
                 sql = message.get("sql")
+                column_parser = message.get("column_parser")
+                column_parser_used = message.get("column_parser_used")
                 fewshot_examples = message.get("fewshot_examples")
                 schema_context = message.get("schema_context")
+                thinking_status = message.get("thinking_status")
 
                 if message["role"] == "assistant" and (
                     route or route_reason or planned_slots or last_result_schema or multi_step_plan
@@ -620,12 +661,19 @@ class StreamlitChatApp:
                         route=route,
                         route_reason=route_reason,
                         planned_slots=planned_slots,
+                        metric_tool_used=metric_tool_used,
+                        entity_tool_used=entity_tool_used,
+                        metric_candidates=metric_candidates,
+                        entity_resolution=entity_resolution,
                         multi_step_plan=multi_step_plan,
                         last_result_schema=last_result_schema,
                         sql=sql,
+                        column_parser=column_parser,
+                        column_parser_used=column_parser_used,
                         fewshot_examples=fewshot_examples,
                         schema_context=schema_context,
                         message_index=idx,
+                        thinking_status=thinking_status if isinstance(thinking_status, dict) else None,
                     )
 
                 chart_spec = message.get("chart_spec")
@@ -713,6 +761,9 @@ class StreamlitChatApp:
         fewshot_examples = result.get("fewshot_examples")
         schema_context = result.get("schema_context")
         thinking_status = result.get("thinking_status")
+        metric_tool_used = result.get("metric_tool_used")
+        entity_tool_used = result.get("entity_tool_used")
+        column_parser_used = result.get("column_parser_used")
 
         display_df: pd.DataFrame | None = None
         chart_spec: ChartSpec | None = None
@@ -747,10 +798,17 @@ class StreamlitChatApp:
             "route": route,
             "route_reason": route_reason,
             "planned_slots": planned_slots,
+            "metric_tool_used": metric_tool_used,
+            "entity_tool_used": entity_tool_used,
+            "metric_candidates": result.get("metric_candidates"),
+            "entity_resolution": result.get("entity_resolution"),
             "multi_step_plan": multi_step_plan,
             "last_result_schema": result.get("last_result_schema"),
+            "column_parser": result.get("column_parser"),
+            "column_parser_used": column_parser_used,
             "fewshot_examples": fewshot_examples,
             "schema_context": schema_context,
+            "thinking_status": thinking_status,
         }
         st.session_state.messages.append(assistant_message)
         message_index = len(st.session_state.messages) - 1
@@ -768,6 +826,13 @@ class StreamlitChatApp:
             "fewshot_examples": fewshot_examples,
             "multi_step_plan": multi_step_plan,
             "schema_context": schema_context,
+            "metric_tool_used": metric_tool_used,
+            "entity_tool_used": entity_tool_used,
+            "metric_candidates": result.get("metric_candidates"),
+            "entity_resolution": result.get("entity_resolution"),
+            "column_parser": result.get("column_parser"),
+            "column_parser_used": column_parser_used,
+            "thinking_status": thinking_status,
         }
         if isinstance(display_df, pd.DataFrame):
             chat_meta["dataframe_records"] = display_df.to_dict(orient="records")
@@ -786,9 +851,15 @@ class StreamlitChatApp:
                 route=route,
                 route_reason=route_reason,
                 planned_slots=planned_slots,
+                metric_tool_used=metric_tool_used,
+                entity_tool_used=entity_tool_used,
+                metric_candidates=result.get("metric_candidates"),
+                entity_resolution=result.get("entity_resolution"),
                 multi_step_plan=multi_step_plan,
                 last_result_schema=result.get("last_result_schema"),
                 sql=sql,
+                column_parser=result.get("column_parser"),
+                column_parser_used=column_parser_used,
                 fewshot_examples=fewshot_examples,
                 schema_context=schema_context,
                 message_index=message_index,
@@ -893,9 +964,15 @@ class StreamlitChatApp:
                         route=state.get("route"),
                         route_reason=state.get("route_reason"),
                         planned_slots=state.get("planned_slots"),
+                        metric_tool_used=state.get("metric_tool_used"),
+                        entity_tool_used=state.get("entity_tool_used"),
+                        metric_candidates=state.get("metric_candidates"),
+                        entity_resolution=state.get("entity_resolution"),
                         multi_step_plan=state.get("multi_step_plan"),
                         last_result_schema=state.get("last_result_schema"),
                         sql=state.get("sql"),
+                        column_parser=state.get("column_parser"),
+                        column_parser_used=state.get("column_parser_used"),
                         fewshot_examples=state.get("fewshot_examples"),
                         schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
@@ -940,6 +1017,10 @@ class StreamlitChatApp:
                 status["Routing"] = THINKING_STATUS_DONE
             if state.get("planned_slots"):
                 status["Planning"] = THINKING_STATUS_DONE
+            if state.get("metric_tool_used"):
+                status["MetricSelector"] = THINKING_STATUS_DONE
+            if state.get("entity_tool_used"):
+                status["EntityResolver"] = THINKING_STATUS_DONE
             if state.get("multi_step_plan"):
                 status["Multi-step"] = THINKING_STATUS_DONE
             if state.get("schema_context"):
@@ -948,6 +1029,8 @@ class StreamlitChatApp:
                 status["Few-shot"] = THINKING_STATUS_DONE
             if state.get("sql"):
                 status["SQL"] = THINKING_STATUS_DONE
+            if state.get("column_parser_used"):
+                status["ColumnParser"] = THINKING_STATUS_DONE
             return sql_in_progress
 
         if not node_name:
@@ -986,6 +1069,10 @@ class StreamlitChatApp:
                 status["Planning"] = THINKING_STATUS_DONE
                 if state.get("multi_step_plan"):
                     status["Multi-step"] = THINKING_STATUS_DONE
+                if state.get("metric_tool_used"):
+                    status["MetricSelector"] = THINKING_STATUS_DONE
+                if state.get("entity_tool_used"):
+                    status["EntityResolver"] = THINKING_STATUS_DONE
             elif node_name == "multi_step":
                 status["Multi-step"] = THINKING_STATUS_DONE
                 if state.get("sql"):
@@ -994,6 +1081,8 @@ class StreamlitChatApp:
             elif node_name == "multi_step_single_sql":
                 if state.get("sql"):
                     status["SQL"] = THINKING_STATUS_DONE
+                if state.get("column_parser_used"):
+                    status["ColumnParser"] = THINKING_STATUS_DONE
                 sql_in_progress = False
             elif node_name == "fewshot":
                 if "Schema Select" in status:
@@ -1006,6 +1095,8 @@ class StreamlitChatApp:
                 if "SQL" not in status:
                     status["SQL"] = THINKING_STATUS_RUNNING
                     sql_in_progress = True
+                if state.get("column_parser_used"):
+                    status["ColumnParser"] = THINKING_STATUS_DONE
             elif node_name == "summarize":
                 if sql_in_progress:
                     status["SQL"] = THINKING_STATUS_DONE
@@ -1047,9 +1138,15 @@ class StreamlitChatApp:
         route: str | None,
         route_reason: str | None,
         planned_slots: dict[str, object] | None,
+        metric_tool_used: bool | None,
+        entity_tool_used: bool | None,
+        metric_candidates: list[dict[str, object]] | None,
+        entity_resolution: dict[str, object] | None,
         multi_step_plan: dict[str, object] | None,
         last_result_schema: list[str] | None,
         sql: str | None,
+        column_parser: dict[str, object] | None,
+        column_parser_used: bool | None,
         fewshot_examples: str | None,
         schema_context: str | None,
         message_index: int,
@@ -1062,9 +1159,15 @@ class StreamlitChatApp:
             route: 라우팅 결과.
             route_reason: 라우팅 근거.
             planned_slots: 플래너 슬롯.
+            metric_tool_used: 메트릭 셀렉터 사용 여부.
+            entity_tool_used: 엔티티 리졸버 사용 여부.
+            metric_candidates: 메트릭 후보 목록.
+            entity_resolution: 엔티티 보강 결과.
             multi_step_plan: 멀티 스텝 계획.
             last_result_schema: 직전 결과 스키마.
             sql: 생성/실행 SQL.
+            column_parser: 컬럼 파서 결과.
+            column_parser_used: 컬럼 파서 사용 여부.
             fewshot_examples: few-shot 예시 문자열.
             schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
@@ -1097,8 +1200,14 @@ class StreamlitChatApp:
                         route=route,
                         route_reason=route_reason,
                         planned_slots=planned_slots,
+                        metric_tool_used=metric_tool_used,
+                        entity_tool_used=entity_tool_used,
+                        metric_candidates=metric_candidates,
+                        entity_resolution=entity_resolution,
                         multi_step_plan=multi_step_plan,
                         sql=sql,
+                        column_parser=column_parser,
+                        column_parser_used=column_parser_used,
                         fewshot_examples=fewshot_examples,
                         schema_context=schema_context,
                     )
@@ -1119,6 +1228,12 @@ class StreamlitChatApp:
             else:
                 st.markdown("- ⏳ Planning")
 
+            if metric_tool_used:
+                _render_done_step("MetricSelector", {"metric_candidates": metric_candidates or []})
+
+            if entity_tool_used:
+                _render_done_step("EntityResolver", {"entity_resolution": entity_resolution or {}})
+
             if multi_step_plan:
                 _render_done_step("Multi-step", {"multi_step_plan": multi_step_plan})
 
@@ -1137,6 +1252,9 @@ class StreamlitChatApp:
             else:
                 st.markdown("- ⏳ SQL")
 
+            if column_parser_used:
+                _render_done_step("ColumnParser", {"column_parser": column_parser or {}})
+
     def _build_thinking_step_data(
         self,
         label: str,
@@ -1144,8 +1262,14 @@ class StreamlitChatApp:
         route: str | None,
         route_reason: str | None,
         planned_slots: dict[str, object] | None,
+        metric_tool_used: bool | None,
+        entity_tool_used: bool | None,
+        metric_candidates: list[dict[str, object]] | None,
+        entity_resolution: dict[str, object] | None,
         multi_step_plan: dict[str, object] | None,
         sql: str | None,
+        column_parser: dict[str, object] | None,
+        column_parser_used: bool | None,
         fewshot_examples: str | None,
         schema_context: str | None,
     ) -> dict[str, object] | None:
@@ -1157,8 +1281,14 @@ class StreamlitChatApp:
             route: 라우팅 결과.
             route_reason: 라우팅 근거.
             planned_slots: 플래너 슬롯.
+            metric_tool_used: 메트릭 셀렉터 사용 여부.
+            entity_tool_used: 엔티티 리졸버 사용 여부.
+            metric_candidates: 메트릭 후보.
+            entity_resolution: 엔티티 보강 결과.
             multi_step_plan: 멀티 스텝 계획.
             sql: 생성/실행 SQL.
+            column_parser: 컬럼 파서 결과.
+            column_parser_used: 컬럼 파서 사용 여부.
             fewshot_examples: few-shot 예시 문자열.
             schema_context: 선별된 스키마 컨텍스트.
 
@@ -1170,6 +1300,10 @@ class StreamlitChatApp:
             return {"route": route, "route_reason": route_reason}
         if label == "Planning" and planned_slots:
             return {"planned_slots": planned_slots}
+        if label == "MetricSelector" and metric_tool_used:
+            return {"metric_candidates": metric_candidates or []}
+        if label == "EntityResolver" and entity_tool_used:
+            return {"entity_resolution": entity_resolution or {}}
         if label == "Multi-step" and multi_step_plan:
             return {"multi_step_plan": multi_step_plan}
         if label == "Schema Select" and schema_context:
@@ -1178,6 +1312,8 @@ class StreamlitChatApp:
             return {"fewshot_examples": fewshot_examples}
         if label == "SQL" and sql:
             return {"sql": sql}
+        if label == "ColumnParser" and column_parser_used:
+            return {"column_parser": column_parser or {}}
         return None
 
     def _render_result_summary(self, dataframe: pd.DataFrame, planned_slots: dict[str, object] | None) -> None:
