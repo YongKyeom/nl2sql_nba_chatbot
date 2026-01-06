@@ -102,6 +102,11 @@ SQLite용 SQL을 생성하라.
 - column_parser 도구가 제공되면 SQL 생성 후 호출해 테이블/컬럼 정합성을 검증한다.
   - 오류가 있으면 수정한 SQL로 다시 시도한 뒤 최종 SQL만 출력한다.
 
+column_parser 입력/출력 요약:
+- 입력: { "sql": "..." }
+- 출력: { "tables": [...], "unknown_tables": [...], "unknown_columns": {...}, "is_valid": true|false }
+- unknown_tables/unknown_columns가 있으면 즉시 수정 후 재생성한다.
+
 출력:
 - SQL 단일 문자열만 반환한다.
 

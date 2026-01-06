@@ -26,6 +26,11 @@ SQL_REPAIR_PROMPT = dedent(
 - 출력은 SQL만, 코드블록/설명 금지.
 - column_parser 도구가 제공되면 수정 SQL을 검증해 오류가 없도록 보정한다.
 
+column_parser 입력/출력 요약:
+- 입력: { "sql": "..." }
+- 출력: { "unknown_tables": [...], "unknown_columns": {...}, "is_valid": true|false }
+- 오류가 있으면 해당 테이블/컬럼을 수정한 뒤 SQL만 다시 출력한다.
+
 출력:
 - SQL 단일 문자열만 반환한다.
 

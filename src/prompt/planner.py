@@ -26,6 +26,25 @@ PLANNER_PROMPT = dedent(
 - 팀/선수명 추정이 필요하거나 이전 결과를 참조하는 경우 entity_resolver를 호출한다.
 - 도구 호출 후 결과를 반영해 slots를 완성한다.
 
+도구 입력/출력 요약:
+- metric_selector 입력:
+  { "query": "...", "top_k": 5 }
+  출력:
+  { "candidates": [ { "name": "...", "aliases": [...], "description_ko": "...", "formula_ko": "...",
+                     "required_tables": [...], "required_columns": [...] } ], "count": N }
+- entity_resolver 입력:
+  { "query": "...", "previous_entities": { "teams": [...], "players": [...] }, "top_k": 3 }
+  출력:
+  { "teams": [ { "team_abbreviation": "...", "team_name": "...", "city": "...", "nickname": "..." } ],
+    "players": [ { "player_name": "...", "person_id": "...", "team_abbreviation": "..." } ],
+    "filters": { "team_abbreviation": "...", "team_abbreviation_in": [...], "player_name": "..." },
+    "has_match": true|false }
+
+활용 가이드:
+- metric_selector 결과는 `metric` 선택에 직접 활용하고, 애매할 때는 후보 1~2개를 비교해 결정한다.
+- entity_resolver 결과의 `filters`를 slots.filters에 병합하고, team/player 엔티티 유형을 보정한다.
+- 도구 결과가 비어 있으면 규칙 기반 결과를 유지하거나 필요한 정보를 `clarify_question`으로 요청한다.
+
 출력 형식(반드시 JSON):
 {
   "slots": {
