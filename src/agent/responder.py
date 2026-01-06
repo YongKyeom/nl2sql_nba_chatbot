@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.metrics.registry import MetricDefinition
 from src.prompt.clarify import CLARIFY_PROMPT
@@ -43,19 +45,27 @@ class Responder:
             config: 응답 생성기 설정.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = config.model
         self._temperature = config.temperature
 
-    def compose_direct(self, metric: MetricDefinition) -> str:
+    async def compose_direct(
+        self,
+        metric: MetricDefinition,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         Direct Answer 응답을 생성.
 
         Args:
             metric: 메트릭 정의.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
         prompt = DIRECT_ANSWER_PROMPT.format(
@@ -63,25 +73,47 @@ class Responder:
             metric_description=metric.description_ko,
             metric_formula=metric.formula_ko or "정의에 계산식이 명시되어 있지 않습니다.",
             metric_cut_rules=str(metric.cut_rules),
+            conversation_context=conversation_context or "없음",
         )
-        return self._invoke(prompt)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_clarify(self, user_message: str, clarify_question: str) -> str:
+    async def compose_clarify(
+        self,
+        user_message: str,
+        clarify_question: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         확인 질문 응답을 생성.
 
         Args:
             user_message: 사용자 질문.
             clarify_question: 확인 질문.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = CLARIFY_PROMPT.format(user_message=user_message, clarify_question=clarify_question)
-        return self._invoke(prompt)
+        prompt = CLARIFY_PROMPT.format(
+            user_message=user_message,
+            clarify_question=clarify_question,
+            conversation_context=conversation_context or "없음",
+        )
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_reuse(self, user_message: str, reuse_summary: str, result_markdown: str) -> str:
+    async def compose_reuse(
+        self,
+        user_message: str,
+        reuse_summary: str,
+        result_markdown: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         이전 결과 후처리 응답을 생성.
 
@@ -89,73 +121,109 @@ class Responder:
             user_message: 사용자 질문.
             reuse_summary: 후처리 요약.
             result_markdown: 마크다운 테이블.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
         prompt = REUSE_PROMPT.format(
             user_message=user_message,
             reuse_summary=reuse_summary,
             result_markdown=result_markdown,
+            conversation_context=conversation_context or "없음",
         )
-        return self._invoke(prompt)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_missing_metric(self, user_message: str) -> str:
+    async def compose_missing_metric(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         메트릭 정의 누락 응답을 생성.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = MISSING_METRIC_PROMPT.format(user_message=user_message)
-        return self._invoke(prompt)
+        prompt = MISSING_METRIC_PROMPT.format(
+            user_message=user_message,
+            conversation_context=conversation_context or "없음",
+        )
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_general(self, user_message: str) -> str:
+    async def compose_general(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         일반 안내 응답을 생성.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = GENERAL_ANSWER_PROMPT.format(user_message=user_message)
-        return self._invoke(prompt)
+        prompt = GENERAL_ANSWER_PROMPT.format(
+            user_message=user_message,
+            conversation_context=conversation_context or "없음",
+        )
+        return await self._invoke(prompt, stream=stream)
 
-    def _invoke(self, prompt: str) -> str:
+    async def _invoke(self, prompt: str, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         LLM 호출을 수행.
 
         Args:
             prompt: 사용자 프롬프트.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            응답 문자열.
+            응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        response = self._client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        if stream:
+            return self._client.stream(
+                model=self._model,
+                temperature=self._temperature,
+                messages=messages,
+            )
+
+        response = await self._client.invoke(
             model=self._model,
             temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
         )
         return (response.choices[0].message.content or "").strip()
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 Responder 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 Responder 테스트를 건너뜁니다.")
+            return
+
         # 2) 일반 안내 응답 테스트
         from pathlib import Path
 
@@ -169,5 +237,7 @@ if __name__ == "__main__":
         metric = registry.get("win_pct")
 
         if metric:
-            print(responder.compose_direct(metric))
-        print(responder.compose_general("무슨 데이터를 알려줄 수 있어?"))
+            print(await responder.compose_direct(metric))
+        print(await responder.compose_general("무슨 데이터를 알려줄 수 있어?"))
+
+    asyncio.run(_main())

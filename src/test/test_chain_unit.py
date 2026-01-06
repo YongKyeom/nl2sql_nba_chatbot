@@ -91,7 +91,7 @@ class DummyRouter:
         self._route = route
         self._metric_name = metric_name
 
-    def route(self, context: Any, registry: MetricsRegistry) -> RouterResult:
+    async def route(self, context: Any, registry: MetricsRegistry) -> RouterResult:
         """
         라우팅 결과를 반환.
 
@@ -124,7 +124,7 @@ class DummySQLGenerator:
 
         self._sql = sql
 
-    def generate_sql(self, payload: Any) -> str:
+    async def generate_sql(self, payload: Any) -> str:
         """
         SQL을 반환.
 
@@ -137,7 +137,7 @@ class DummySQLGenerator:
 
         return self._sql
 
-    def repair_sql(self, payload: Any) -> str:
+    async def repair_sql(self, payload: Any) -> str:
         """
         실패 SQL 수정을 대신한다.
 
@@ -176,7 +176,7 @@ class DummyFewshotGenerator:
     테스트용 Few-shot 생성기.
     """
 
-    def generate_examples(self, payload: Any) -> str:
+    async def generate_examples(self, payload: Any) -> str:
         """
         기본 few-shot 예시를 반환한다.
 
@@ -189,7 +189,7 @@ class DummyFewshotGenerator:
 
         return SQL_FEWSHOT_EXAMPLES
 
-    def select_schema(self, payload: Any) -> Any:
+    async def select_schema(self, payload: Any) -> Any:
         """
         스키마 선별을 비워 반환한다.
 
@@ -208,7 +208,7 @@ class DummyMultiStepPlanner:
     테스트용 멀티 스텝 플래너.
     """
 
-    def plan(self, payload: Any) -> Any:
+    async def plan(self, payload: Any) -> Any:
         """
         멀티 스텝 미사용으로 고정한다.
 
@@ -240,7 +240,7 @@ class DummySummarizer:
 
         self._answer = answer
 
-    def summarize(self, payload: Any) -> str:
+    async def summarize(self, payload: Any, *, stream: bool = False) -> str:
         """
         요약 문자열을 반환.
 
@@ -272,12 +272,19 @@ class DummyResponder:
 
         self._answer = answer
 
-    def compose_direct(self, metric: Any) -> str:
+    async def compose_direct(
+        self,
+        metric: Any,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         Direct Answer 응답을 반환.
 
         Args:
             metric: 메트릭 정의.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -285,12 +292,19 @@ class DummyResponder:
 
         return self._answer
 
-    def compose_general(self, user_message: str) -> str:
+    async def compose_general(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         일반 안내 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -298,13 +312,21 @@ class DummyResponder:
 
         return self._answer
 
-    def compose_clarify(self, user_message: str, clarify_question: str) -> str:
+    async def compose_clarify(
+        self,
+        user_message: str,
+        clarify_question: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         확인 질문 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
             clarify_question: 확인 질문.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -312,7 +334,15 @@ class DummyResponder:
 
         return f"{self._answer} - {clarify_question}"
 
-    def compose_reuse(self, user_message: str, reuse_summary: str, result_markdown: str) -> str:
+    async def compose_reuse(
+        self,
+        user_message: str,
+        reuse_summary: str,
+        result_markdown: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         후처리 응답을 반환.
 
@@ -320,6 +350,7 @@ class DummyResponder:
             user_message: 사용자 질문.
             reuse_summary: 후처리 요약.
             result_markdown: 마크다운 테이블.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -327,12 +358,20 @@ class DummyResponder:
 
         return f"{self._answer} - {reuse_summary}"
 
-    def compose_missing_metric(self, user_message: str) -> str:
+    async def compose_missing_metric(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         메트릭 누락 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
+            stream: 스트리밍 여부.
 
         Returns:
             응답 문자열.
@@ -341,12 +380,13 @@ class DummyResponder:
         return self._answer
 
 
-class TestAgentAnswerFlow(unittest.TestCase):
+
+class TestAgentAnswerFlow(unittest.IsolatedAsyncioTestCase):
     """
     에이전트 응답 흐름 테스트.
     """
 
-    def test_direct_answer_response(self) -> None:
+    async def test_direct_answer_response(self) -> None:
         """
         Direct Answer 응답 형식을 검증한다.
         """
@@ -356,11 +396,11 @@ class TestAgentAnswerFlow(unittest.TestCase):
             sql="SELECT 1",
         )
         chain = build_agent_chain(deps)
-        result = chain.invoke({"user_message": "TS% 정의 알려줘"})
+        result = await chain.ainvoke({"user_message": "TS% 정의 알려줘"})
 
         self.assertIn("요약 테스트", result["final_answer"])
 
-    def test_reuse_response(self) -> None:
+    async def test_reuse_response(self) -> None:
         """
         이전 결과 후처리 응답을 검증한다.
         """
@@ -376,13 +416,13 @@ class TestAgentAnswerFlow(unittest.TestCase):
             memory=memory,
         )
         chain = build_agent_chain(deps)
-        result = chain.invoke({"user_message": "상위 1개만"})
+        result = await chain.ainvoke({"user_message": "상위 1개만"})
 
         self.assertIsNotNone(result.get("result_df"))
         self.assertEqual(len(result["result_df"]), 1)
         self.assertIn("상위 1개", result["final_answer"])
 
-    def test_sql_response(self) -> None:
+    async def test_sql_response(self) -> None:
         """
         실제 DB에서 SQL 실행 흐름을 검증한다.
         """
@@ -398,7 +438,7 @@ class TestAgentAnswerFlow(unittest.TestCase):
             ),
         )
         chain = build_agent_chain(deps)
-        result = chain.invoke({"user_message": "2018 드래프트 상위 5픽 보여줘"})
+        result = await chain.ainvoke({"user_message": "2018 드래프트 상위 5픽 보여줘"})
 
         self.assertIsNotNone(result.get("result_df"))
         self.assertGreater(len(result["result_df"]), 0)
@@ -469,7 +509,37 @@ def _skip_if_missing(path: Path, message: str) -> None:
         raise unittest.SkipTest(message)
 
 
-def run_query(
+def _print_agent_debug(result: dict[str, object]) -> None:
+    """
+    에이전트 주요 출력 정보를 로그로 남긴다.
+
+    Args:
+        result: 에이전트 결과.
+    """
+
+    payload = {
+        "route": result.get("route"),
+        "route_reason": result.get("route_reason"),
+        "planned_slots": result.get("planned_slots"),
+        "metric_tool_used": result.get("metric_tool_used"),
+        "entity_tool_used": result.get("entity_tool_used"),
+        "metric_candidates": result.get("metric_candidates"),
+        "entity_resolution": result.get("entity_resolution"),
+        "multi_step_plan": result.get("multi_step_plan"),
+        "schema_context": result.get("schema_context"),
+        "fewshot_examples": result.get("fewshot_examples"),
+        "sql": result.get("sql"),
+        "column_parser_used": result.get("column_parser_used"),
+        "column_parser": result.get("column_parser"),
+        "last_result_schema": result.get("last_result_schema"),
+        "error": result.get("error"),
+        "error_detail": result.get("error_detail"),
+    }
+    print("\n=== Debug ===")
+    print({key: value for key, value in payload.items() if value is not None})
+
+
+async def run_query(
     query: str,
     *,
     route: Route,
@@ -503,10 +573,9 @@ def run_query(
         memory=memory,
     )
     chain = build_agent_chain(deps)
-    result = chain.invoke({"user_message": query})
+    result = await chain.ainvoke({"user_message": query})
     if debug:
-        print("\n=== Debug ===")
-        print({"route": result.get("route"), "planned_slots": result.get("planned_slots")})
+        _print_agent_debug(result)
     return result
 
 

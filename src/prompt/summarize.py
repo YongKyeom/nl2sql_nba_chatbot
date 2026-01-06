@@ -6,6 +6,7 @@
     sql: 실행된 SQL.
     result_preview: 결과 미리보기(상위 N행).
     applied_filters: 적용된 기간/컷/필터 요약.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -54,6 +55,9 @@ SUMMARY_PROMPT = dedent(
 - 각 섹션 제목은 반드시 단독 줄로 출력한다.
 - 섹션 제목과 내용 사이에 빈 줄 1줄을 둔다.
 - 섹션과 섹션 사이에 빈 줄 1줄을 둔다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_question}

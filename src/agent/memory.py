@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,8 @@ class ShortTermMemory:
 
     turns: list[ConversationTurn] = field(default_factory=list)
     max_turns: int = 20
+    summary_text: str | None = None
+    summary_updated_at: str | None = None
 
     def reset(self) -> None:
         """
@@ -65,6 +69,8 @@ class ShortTermMemory:
         self.last_route = None
         self.last_entities = {}
         self.turns = []
+        self.summary_text = None
+        self.summary_updated_at = None
 
     def start_turn(self, user_message: str) -> None:
         """
@@ -184,6 +190,110 @@ class ShortTermMemory:
 
         return "\n".join(lines) if lines else "없음"
 
+    def build_conversation_context(
+        self,
+        *,
+        keep_turns: int = 3,
+        max_chars_per_message: int = 180,
+    ) -> str:
+        """
+        요약 + 최근 대화를 합친 컨텍스트를 만든다.
+
+        Args:
+            keep_turns: 최근 유지할 턴 개수.
+            max_chars_per_message: 메시지당 최대 글자 수.
+
+        Returns:
+            컨텍스트 문자열(없으면 "없음").
+        """
+
+        parts: list[str] = []
+        if self.summary_text:
+            parts.append(f"[이전 요약]\n{self.summary_text.strip()}")
+
+        recent = _format_turns(self.turns[-keep_turns:], max_chars_per_message)
+        if recent:
+            parts.append(f"[최근 대화]\n{recent}")
+
+        return "\n\n".join(parts) if parts else "없음"
+
+    def build_full_dialogue(self) -> str:
+        """
+        전체 대화 문자열을 생성한다.
+
+        Returns:
+            전체 대화 문자열(없으면 빈 문자열).
+        """
+
+        parts: list[str] = []
+        if self.summary_text:
+            parts.append(self.summary_text.strip())
+        turns_text = _format_turns(self.turns, max_chars_per_message=None)
+        if turns_text:
+            parts.append(turns_text)
+        return "\n".join(parts).strip()
+
+    def should_summarize(self, *, max_chars: int, keep_turns: int) -> bool:
+        """
+        요약이 필요한지 판단한다.
+
+        Args:
+            max_chars: 요약 트리거 문자 수.
+            keep_turns: 유지할 최근 턴 개수.
+
+        Returns:
+            요약 필요 여부.
+        """
+
+        if len(self.turns) <= keep_turns:
+            return False
+        return len(self.build_full_dialogue()) > max_chars
+
+    def build_summary_source(self, *, keep_turns: int, max_chars_per_message: int = 800) -> str:
+        """
+        요약 대상 문자열을 만든다.
+
+        Args:
+            keep_turns: 최근 유지할 턴 개수.
+            max_chars_per_message: 요약 입력에서 메시지당 최대 글자 수.
+
+        Returns:
+            요약 입력 문자열(없으면 빈 문자열).
+        """
+
+        if len(self.turns) <= keep_turns:
+            return ""
+
+        parts: list[str] = []
+        if self.summary_text:
+            parts.append(f"[이전 요약]\n{self.summary_text.strip()}")
+
+        older_turns = self.turns[: -keep_turns]
+        older_text = _format_turns(older_turns, max_chars_per_message=max_chars_per_message)
+        if older_text:
+            parts.append(f"[이전 대화]\n{older_text}")
+
+        return "\n\n".join(parts).strip()
+
+    def apply_summary(self, summary_text: str, *, keep_turns: int) -> None:
+        """
+        요약 텍스트를 저장하고 최근 턴만 남긴다.
+
+        Args:
+            summary_text: 요약 문자열.
+            keep_turns: 유지할 최근 턴 개수.
+
+        Returns:
+            None
+        """
+
+        self.summary_text = summary_text.strip()
+        self.summary_updated_at = _now_iso()
+        if keep_turns > 0:
+            self.turns = self.turns[-keep_turns:]
+        else:
+            self.turns = []
+
 
 class LongTermMemory:
     """
@@ -245,6 +355,20 @@ class LongTermMemory:
             # 장기 메모리는 "있으면 좋고 없어도 동작해야" 한다.
             # 파일 잠금/권한 이슈로 저장이 실패하더라도 대화 흐름을 깨지 않는다.
             return
+
+    async def observe_async(self, *, user_message: str, planned_slots: dict[str, Any] | None) -> None:
+        """
+        장기 메모리 관찰 로직을 비동기 컨텍스트에서 실행한다.
+
+        Args:
+            user_message: 사용자 입력.
+            planned_slots: 플래너 슬롯(없으면 None).
+
+        Returns:
+            None
+        """
+
+        await asyncio.to_thread(self.observe, user_message=user_message, planned_slots=planned_slots)
 
     def get_default_season(self) -> str | None:
         """
@@ -357,6 +481,9 @@ class ConversationMemory:
 
     short_term: ShortTermMemory = field(default_factory=ShortTermMemory)
     long_term: LongTermMemory = field(default_factory=lambda: LongTermMemory(InMemoryLongTermMemoryStore()))
+    summary_char_limit: int = 10000
+    summary_keep_turns: int = 3
+    summary_max_chars_per_message: int = 180
 
     @classmethod
     def persistent(cls, path: Path) -> ConversationMemory:
@@ -507,6 +634,19 @@ class ConversationMemory:
 
         self.short_term.start_turn(user_message)
 
+    def build_conversation_context(self) -> str:
+        """
+        요약 + 최근 대화를 결합해 프롬프트용 컨텍스트를 만든다.
+
+        Returns:
+            컨텍스트 문자열(없으면 "없음").
+        """
+
+        return self.short_term.build_conversation_context(
+            keep_turns=self.summary_keep_turns,
+            max_chars_per_message=self.summary_max_chars_per_message,
+        )
+
     def finish_turn(
         self,
         *,
@@ -536,6 +676,38 @@ class ConversationMemory:
         )
         self.long_term.observe(user_message=self.short_term.turns[-1].user_message, planned_slots=planned_slots)
 
+    async def finish_turn_async(
+        self,
+        *,
+        assistant_message: str | None,
+        route: str | None,
+        sql: str | None,
+        planned_slots: dict[str, Any] | None,
+    ) -> None:
+        """
+        직전 턴을 비동기 컨텍스트에서 마무리한다.
+
+        Args:
+            assistant_message: 최종 응답.
+            route: 라우팅 결과.
+            sql: 생성/실행 SQL.
+            planned_slots: 플래너 슬롯.
+
+        Returns:
+            None
+        """
+
+        self.short_term.finish_turn(
+            assistant_message=assistant_message,
+            route=route,
+            sql=sql,
+            planned_slots=planned_slots,
+        )
+        await self.long_term.observe_async(
+            user_message=self.short_term.turns[-1].user_message,
+            planned_slots=planned_slots,
+        )
+
 
 def _truncate(text: str, max_chars: int) -> str:
     """
@@ -552,6 +724,45 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 1] + "…"
+
+
+def _format_turns(turns: list[ConversationTurn], max_chars_per_message: int | None) -> str:
+    """
+    턴 목록을 문자열로 직렬화한다.
+
+    Args:
+        turns: 대화 턴 목록.
+        max_chars_per_message: 메시지당 최대 글자 수(없으면 원문 유지).
+
+    Returns:
+        직렬화된 문자열(없으면 빈 문자열).
+    """
+
+    lines: list[str] = []
+    for turn in turns:
+        user = turn.user_message
+        if max_chars_per_message is not None:
+            user = _truncate(user, max_chars_per_message)
+        lines.append(f"- 사용자: {user}")
+
+        if turn.assistant_message:
+            assistant = turn.assistant_message
+            if max_chars_per_message is not None:
+                assistant = _truncate(assistant, max_chars_per_message)
+            lines.append(f"  어시스턴트: {assistant}")
+
+    return "\n".join(lines)
+
+
+def _now_iso() -> str:
+    """
+    UTC ISO 타임스탬프를 반환한다.
+
+    Returns:
+        ISO 문자열.
+    """
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _extract_entities_from_dataframe(dataframe: pd.DataFrame) -> dict[str, list[str]]:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.summarize import SUMMARY_PROMPT
 from src.prompt.system import SYSTEM_PROMPT
@@ -20,12 +22,14 @@ class SummaryInput:
         sql: 실행 SQL.
         result_preview: 결과 미리보기.
         applied_filters: 적용 조건 요약.
+        conversation_context: 최근 대화 컨텍스트.
     """
 
     user_question: str
     sql: str
     result_preview: list[dict[str, object]]
     applied_filters: str
+    conversation_context: str | None = None
 
 
 class Summarizer:
@@ -42,19 +46,20 @@ class Summarizer:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
-    def summarize(self, payload: SummaryInput) -> str:
+    async def summarize(self, payload: SummaryInput, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         요약 텍스트를 생성.
 
         Args:
             payload: 요약 입력.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            요약 문자열.
+            요약 문자열 또는 스트리밍 이터레이터.
         """
 
         prompt = SUMMARY_PROMPT.format(
@@ -62,29 +67,40 @@ class Summarizer:
             sql=payload.sql,
             result_preview=json.dumps(payload.result_preview, ensure_ascii=False),
             applied_filters=payload.applied_filters,
+            conversation_context=payload.conversation_context or "없음",
         )
-        response = self._client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        if stream:
+            return self._client.stream(
+                model=self._model,
+                temperature=self._temperature,
+                messages=messages,
+            )
+
+        response = await self._client.invoke(
             model=self._model,
             temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
         )
         return (response.choices[0].message.content or "").strip()
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 Summarizer 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 Summarizer 테스트를 건너뜁니다.")
+            return
+
         # 2) 요약 생성 테스트
         from src.config import load_config
 
         config = load_config()
         summarizer = Summarizer(model=config.model, temperature=0.0)
-        result = summarizer.summarize(
+        result = await summarizer.summarize(
             SummaryInput(
                 user_question="최근 시즌 승률 상위 3개 팀 알려줘",
                 sql="SELECT team_name, pct FROM team LIMIT 3",
@@ -96,3 +112,5 @@ if __name__ == "__main__":
             )
         )
         print(result)
+
+    asyncio.run(_main())

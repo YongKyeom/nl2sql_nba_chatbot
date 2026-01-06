@@ -1,13 +1,16 @@
 # ruff: noqa: E402, I001
 from __future__ import annotations
 
+import asyncio
 import base64
+import queue
 import re
 import sys
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.agent.memory import ConversationMemory
 from src.agent.scene import ChatbotScene, build_scene
 from src.agent.title_generator import TitleGenerator
 from src.chart.generator import ChartGenerator
@@ -24,6 +28,7 @@ from src.chart.renderer import ChartRenderer
 from src.chart.types import ChartSpec, SUPPORTED_CHART_TYPES
 from src.config import AppConfig, load_config
 from src.db.chat_store import ChatSession, ChatStore
+from src.db.history_store import ChatHistoryStore
 from src.utils.logging import JsonlLogger
 from src.utils.markdown import records_to_markdown
 from src.utils.time import Timer
@@ -82,6 +87,7 @@ THINKING_STEP_ORDER = [
 
 THINKING_STATUS_RUNNING = "running"
 THINKING_STATUS_DONE = "done"
+T = TypeVar("T")
 
 
 class StreamlitChatApp:
@@ -163,9 +169,10 @@ class StreamlitChatApp:
         # 2) 사용자/채팅 세션 준비: 채팅 목록과 세션 복원을 선행한다.
         user_id = self._get_user_id()
         chat_store = self._ensure_chat_store()
+        history_store = self._ensure_history_store()
         active_chat_id = self._ensure_active_chat(chat_store, user_id)
         st.session_state.chat_sessions = chat_store.list_sessions(user_id)
-        selected_chat_id = self._render_chat_sidebar(chat_store, user_id, active_chat_id)
+        selected_chat_id = self._render_chat_sidebar(chat_store, history_store, user_id, active_chat_id)
 
         # 3) 설정/모델 UI: 모델과 Temperature 변경을 먼저 반영한다.
         st.sidebar.divider()
@@ -190,7 +197,8 @@ class StreamlitChatApp:
         if selected_chat_id != st.session_state.loaded_chat_id:
             st.session_state.active_chat_id = selected_chat_id
             st.session_state.messages = self._load_chat_messages(chat_store, user_id, selected_chat_id)
-            self._restore_memory_from_messages(scene, st.session_state.messages)
+            summary_text = history_store.get_summary(user_id, selected_chat_id)
+            self._restore_memory_from_messages(scene, st.session_state.messages, summary_text=summary_text)
             st.session_state.loaded_chat_id = selected_chat_id
 
         # 5) 데이터/유틸 UI: 데이터셋 정보와 스키마 덤프를 제공한다.
@@ -232,6 +240,9 @@ class StreamlitChatApp:
             chat_store.add_message(
                 user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text
             )
+            history_store.add_message(
+                user_id=user_id, chat_id=st.session_state.active_chat_id, role="user", content=user_text
+            )
             self._maybe_set_chat_title(chat_store, title_generator, user_id, st.session_state.active_chat_id, user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
 
@@ -249,8 +260,10 @@ class StreamlitChatApp:
                     chart_generator=chart_generator,
                     chart_renderer=chart_renderer,
                     chat_store=chat_store,
+                    history_store=history_store,
                     user_id=user_id,
                     chat_id=st.session_state.active_chat_id,
+                    memory=scene.memory,
                     show_thinking=False,
                 )
 
@@ -283,6 +296,8 @@ class StreamlitChatApp:
             st.session_state.show_dataset_info = False
         if "chat_store" not in st.session_state:
             st.session_state.chat_store = None
+        if "history_store" not in st.session_state:
+            st.session_state.history_store = None
         if "title_generator" not in st.session_state:
             st.session_state.title_generator = None
         if "chart_generator" not in st.session_state:
@@ -340,6 +355,24 @@ class StreamlitChatApp:
         if st.session_state.chat_store is None:
             st.session_state.chat_store = ChatStore(self._config.chat_db_path)
         return st.session_state.chat_store
+
+    def _ensure_history_store(self) -> ChatHistoryStore:
+        """
+        ChatHistoryStore를 세션에 준비한다.
+
+        Returns:
+            ChatHistoryStore.
+
+        Side Effects:
+            st.session_state.history_store를 갱신할 수 있다.
+
+        Raises:
+            예외 없음.
+        """
+
+        if st.session_state.history_store is None:
+            st.session_state.history_store = ChatHistoryStore(self._config.history_db_path)
+        return st.session_state.history_store
 
     def _ensure_title_generator(self, model: str) -> TitleGenerator:
         """
@@ -438,12 +471,19 @@ class StreamlitChatApp:
             st.session_state.active_chat_id = active_chat_id
         return active_chat_id
 
-    def _render_chat_sidebar(self, chat_store: ChatStore, user_id: str, active_chat_id: str) -> str:
+    def _render_chat_sidebar(
+        self,
+        chat_store: ChatStore,
+        history_store: ChatHistoryStore,
+        user_id: str,
+        active_chat_id: str,
+    ) -> str:
         """
         사이드바 채팅 목록을 렌더링한다.
 
         Args:
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             active_chat_id: 현재 활성 채팅 ID.
 
@@ -488,18 +528,26 @@ class StreamlitChatApp:
             label = f"{prefix} {session.title}"
             if cols[0].button(label, key=f"chat_select_{session.chat_id}", use_container_width=True):
                 selected = session.chat_id
-            self._render_chat_actions(cols[1], chat_store, user_id, session)
+            self._render_chat_actions(cols[1], chat_store, history_store, user_id, session)
 
         st.session_state.active_chat_id = selected
         return selected
 
-    def _render_chat_actions(self, column: Any, chat_store: ChatStore, user_id: str, session: ChatSession) -> None:
+    def _render_chat_actions(
+        self,
+        column: Any,
+        chat_store: ChatStore,
+        history_store: ChatHistoryStore,
+        user_id: str,
+        session: ChatSession,
+    ) -> None:
         """
         채팅 항목의 액션 메뉴를 렌더링한다.
 
         Args:
             column: 렌더링할 컬럼.
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             session: 채팅 세션.
 
@@ -536,6 +584,7 @@ class StreamlitChatApp:
             if st.button("삭제", key=f"delete_chat_{chat_id}"):
                 if confirm:
                     chat_store.delete_session(user_id, chat_id)
+                    history_store.delete_session(user_id, chat_id)
                     st.session_state.active_chat_id = None
                     st.session_state.loaded_chat_id = None
                     st.session_state.messages = []
@@ -756,8 +805,10 @@ class StreamlitChatApp:
         chart_generator: ChartGenerator,
         chart_renderer: ChartRenderer,
         chat_store: ChatStore,
+        history_store: ChatHistoryStore,
         user_id: str,
         chat_id: str,
+        memory: ConversationMemory | None = None,
         show_thinking: bool = True,
     ) -> None:
         """
@@ -771,8 +822,10 @@ class StreamlitChatApp:
             chart_generator: 차트 생성기.
             chart_renderer: 차트 렌더러.
             chat_store: 채팅 저장소.
+            history_store: 히스토리 저장소.
             user_id: 사용자 ID.
             chat_id: 채팅 ID.
+            memory: 대화 메모리(스트리밍 응답 보강용).
             show_thinking: Thinking 패널 표시 여부.
 
         Side Effects:
@@ -783,6 +836,7 @@ class StreamlitChatApp:
         """
 
         final_answer = result.get("final_answer")
+        final_answer_stream = result.get("final_answer_stream")
         sql = result.get("sql")
         dataframe = result.get("result_df")
         error = result.get("error")
@@ -798,24 +852,17 @@ class StreamlitChatApp:
         entity_tool_used = result.get("entity_tool_used")
         column_parser_used = result.get("column_parser_used")
 
-        if not isinstance(final_answer, str) or not final_answer.strip():
-            if isinstance(error, str) and error.strip():
-                final_answer = f"오류가 발생했습니다: {error}"
-            else:
-                final_answer = "응답을 생성하지 못했습니다."
-
         display_df: pd.DataFrame | None = None
+        table_markdown: str | None = None
         chart_spec: ChartSpec | None = None
         chart_image_path: str | None = None
         if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
             display_df = self._prepare_dataframe_for_display(dataframe, True)
             table_markdown = self._dataframe_to_markdown(display_df)
-            final_answer = self._merge_markdown_table(str(final_answer), table_markdown)
 
             if self._is_chart_request(user_text):
                 chart_spec = self._build_chart_spec(user_text, display_df, chart_generator)
                 if chart_spec:
-                    final_answer = self._ensure_chart_section(final_answer)
                     chart_result = chart_renderer.prepare_chart_image(
                         display_df,
                         chart_spec,
@@ -824,6 +871,25 @@ class StreamlitChatApp:
                         existing_path=None,
                     )
                     chart_image_path = chart_result.path
+
+        use_llm_stream = isinstance(final_answer_stream, AsyncIterator)
+        base_answer = ""
+        if use_llm_stream:
+            base_answer = self._stream_llm_answer(final_answer_stream)
+        elif isinstance(final_answer, str):
+            base_answer = final_answer
+
+        if not base_answer.strip():
+            if isinstance(error, str) and error.strip():
+                base_answer = f"오류가 발생했습니다: {error}"
+            else:
+                base_answer = "응답을 생성하지 못했습니다."
+
+        final_answer = base_answer
+        if chart_spec:
+            final_answer = self._ensure_chart_section(final_answer)
+        if table_markdown:
+            final_answer = self._merge_markdown_table(final_answer, table_markdown)
 
         assistant_message = {
             "role": "assistant",
@@ -884,6 +950,15 @@ class StreamlitChatApp:
             content=final_answer,
             meta=chat_meta,
         )
+        history_store.add_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            role="assistant",
+            content=final_answer,
+            meta={"route": route, "planned_slots": planned_slots},
+        )
+        if memory and memory.short_term.summary_text:
+            history_store.set_summary(user_id, chat_id, memory.short_term.summary_text)
 
         if show_thinking:
             self._render_thinking_panel(
@@ -905,19 +980,33 @@ class StreamlitChatApp:
                 thinking_status=thinking_status,
             )
 
-        if chart_spec and isinstance(display_df, pd.DataFrame):
-            self._render_answer_with_chart(
-                str(final_answer),
-                display_df,
-                chart_spec,
-                user_id=user_id,
-                chat_id=chat_id,
-                chart_image_path=chart_image_path,
-                chart_renderer=chart_renderer,
-                stream=True,
-            )
+        if use_llm_stream:
+            if chart_spec and isinstance(display_df, pd.DataFrame):
+                st.markdown("📊 차트")
+                self._render_chart(
+                    display_df,
+                    chart_spec,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chart_image_path=chart_image_path,
+                    chart_renderer=chart_renderer,
+                )
+            if table_markdown and not self._has_markdown_table(base_answer):
+                st.markdown(table_markdown)
         else:
-            st.write_stream(self._stream_text(str(final_answer)))
+            if chart_spec and isinstance(display_df, pd.DataFrame):
+                self._render_answer_with_chart(
+                    str(final_answer),
+                    display_df,
+                    chart_spec,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chart_image_path=chart_image_path,
+                    chart_renderer=chart_renderer,
+                    stream=True,
+                )
+            else:
+                st.write_stream(self._stream_text(str(final_answer)))
 
         if isinstance(display_df, pd.DataFrame) and not display_df.empty:
             if chart_spec:
@@ -950,6 +1039,14 @@ class StreamlitChatApp:
             user_id=user_id,
         )
 
+        if use_llm_stream and memory is not None:
+            memory.finish_turn(
+                assistant_message=final_answer,
+                route=str(route) if route else None,
+                sql=str(sql) if isinstance(sql, str) else None,
+                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+            )
+
     def _run_agent_with_thinking(self, scene: ChatbotScene, user_message: str) -> dict[str, object]:
         """
         스트리밍으로 Thinking 패널을 업데이트하며 에이전트를 실행한다.
@@ -974,7 +1071,8 @@ class StreamlitChatApp:
         sql_in_progress = False
 
         try:
-            for event in scene.orchestrator.stream(user_message):
+            async_iter = scene.orchestrator.stream(user_message)
+            for event in self._sync_from_async_iter(async_iter):
                 if not isinstance(event, dict):
                     continue
                 event_type = event.get("event_type")
@@ -1018,14 +1116,19 @@ class StreamlitChatApp:
                         schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
                         thinking_status=thinking_status,
+                        is_final=event_type == "final",
                     )
         except Exception:
             placeholder.empty()
-            return scene.ask(user_message)
+            return self._run_async(scene.ask(user_message))
 
-        if final_state is None or final_state.get("final_answer") is None:
+        if final_state is None:
             placeholder.empty()
-            return scene.ask(user_message)
+            return self._run_async(scene.ask(user_message))
+
+        if final_state.get("final_answer") is None and final_state.get("final_answer_stream") is None:
+            placeholder.empty()
+            return self._run_async(scene.ask(user_message))
 
         final_state["thinking_status"] = thinking_status
         return final_state
@@ -1192,6 +1295,7 @@ class StreamlitChatApp:
         schema_context: str | None,
         message_index: int,
         thinking_status: dict[str, str] | None = None,
+        is_final: bool = True,
     ) -> None:
         """
         Thinking(단계별 상태)을 렌더링한다.
@@ -1213,6 +1317,7 @@ class StreamlitChatApp:
             schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
             thinking_status: 단계별 상태 딕셔너리(스트리밍용).
+            is_final: 최종 상태 여부(True면 접힌 상태로 렌더링).
 
         Side Effects:
             Thinking 패널 UI를 렌더링한다.
@@ -1225,7 +1330,7 @@ class StreamlitChatApp:
         if thinking_status:
             has_running = any(value == THINKING_STATUS_RUNNING for value in thinking_status.values())
             status_label = "⏳ Thinking" if has_running else "✅ Thinking"
-        with st.expander(status_label, expanded=False):
+        with st.expander(status_label, expanded=not is_final):
 
             def _render_step(label: str, status: str, data: dict[str, object] | None) -> None:
                 icon = "✅" if status == THINKING_STATUS_DONE else "⏳"
@@ -1565,11 +1670,13 @@ class StreamlitChatApp:
         columns = list(dataframe.columns)
         sample_records = dataframe.head(5).to_dict(orient="records")
         try:
-            spec = chart_generator.generate(
-                user_question=user_text,
-                columns=columns,
-                numeric_columns=numeric_columns,
-                sample_records=str(sample_records),
+            spec = self._run_async(
+                chart_generator.generate(
+                    user_question=user_text,
+                    columns=columns,
+                    numeric_columns=numeric_columns,
+                    sample_records=str(sample_records),
+                )
             )
         except Exception:
             spec = {}
@@ -1870,6 +1977,64 @@ class StreamlitChatApp:
 
         return bool(re.match(r"^\|?\s*[-:|\s]+\s*\|?$", line.strip()))
 
+    def _run_async(self, coro: Awaitable[T]) -> T:
+        """
+        코루틴을 동기 컨텍스트에서 실행한다.
+
+        Args:
+            coro: 실행할 코루틴.
+
+        Returns:
+            코루틴 결과.
+        """
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+    def _sync_from_async_iter(self, async_iter: AsyncIterator[T]) -> Iterator[T]:
+        """
+        AsyncIterator를 동기 이터레이터로 변환한다.
+
+        Args:
+            async_iter: 비동기 이터레이터.
+
+        Yields:
+            스트리밍 아이템.
+        """
+
+        item_queue: queue.Queue[object] = queue.Queue()
+        sentinel = object()
+
+        def _runner() -> None:
+            async def _consume() -> None:
+                try:
+                    async for item in async_iter:
+                        item_queue.put(item)
+                except Exception as exc:  # noqa: BLE001
+                    item_queue.put(exc)
+                finally:
+                    item_queue.put(sentinel)
+
+            asyncio.run(_consume())
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+
+        while True:
+            item = item_queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item  # type: ignore[misc]
+
+        thread.join()
+
     def _stream_text(self, text: str, chunk_size: int = 24, delay_sec: float = 0.01) -> Iterator[str]:
         """
         텍스트를 일정 크기씩 나눠 스트리밍용 청크로 반환한다.
@@ -1897,6 +2062,28 @@ class StreamlitChatApp:
             yield text[offset : offset + chunk_size]
             if delay_sec > 0:
                 time.sleep(delay_sec)
+
+    def _stream_llm_answer(self, stream: AsyncIterator[str]) -> str:
+        """
+        LLM 스트리밍 응답을 출력하면서 전체 텍스트를 수집한다.
+
+        Args:
+            stream: LLM 스트리밍 이터레이터.
+
+        Returns:
+            수집된 전체 응답 문자열.
+        """
+
+        parts: list[str] = []
+
+        def _collector() -> Iterator[str]:
+            for chunk in self._sync_from_async_iter(stream):
+                text = str(chunk)
+                parts.append(text)
+                yield text
+
+        st.write_stream(_collector())
+        return "".join(parts).strip()
 
     def _apply_custom_theme(self) -> None:
         """
@@ -2114,13 +2301,20 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
             hydrated.append(message)
         return hydrated
 
-    def _restore_memory_from_messages(self, scene: ChatbotScene, messages: list[dict[str, object]]) -> None:
+    def _restore_memory_from_messages(
+        self,
+        scene: ChatbotScene,
+        messages: list[dict[str, object]],
+        *,
+        summary_text: str | None = None,
+    ) -> None:
         """
         저장된 메시지로 대화 메모리를 복원한다.
 
         Args:
             scene: ChatbotScene.
             messages: 메시지 리스트.
+            summary_text: 저장된 대화 요약(없으면 None).
 
         Side Effects:
             단기 메모리를 초기화하고 재구성한다.
@@ -2131,6 +2325,7 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
 
         memory = scene.memory
         memory.short_term.reset()
+        memory.short_term.summary_text = summary_text
 
         for message in messages:
             role = message.get("role")
@@ -2158,6 +2353,11 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
                 memory.short_term.last_result = dataframe
                 memory.short_term.last_result_schema = list(dataframe.columns)
                 memory.short_term.last_slots = planned_slots
+
+        if summary_text:
+            keep_turns = memory.summary_keep_turns
+            if keep_turns > 0:
+                memory.short_term.turns = memory.short_term.turns[-keep_turns:]
 
     def _maybe_set_chat_title(
         self,
@@ -2189,7 +2389,7 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
             return
 
         try:
-            title = title_generator.generate(user_message)
+            title = self._run_async(title_generator.generate(user_message))
         except Exception:
             return
 

@@ -3,6 +3,7 @@
 
 변수:
     user_message: 사용자 질문 원문.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -39,6 +40,9 @@ MISSING_METRIC_PROMPT = dedent(
 - 1~2개의 후속 질문을 제안한다.
 - 출력에 <output> 같은 태그를 포함하지 않는다.
 - <...> 표시는 실제 내용으로 치환하고 그대로 출력하지 않는다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_message}

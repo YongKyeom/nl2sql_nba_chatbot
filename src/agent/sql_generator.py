@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.multi_step_sql import MULTI_STEP_SQL_PROMPT
 from src.prompt.sql_generation import SQL_FEWSHOT_EXAMPLES, SQL_GENERATION_PROMPT
@@ -110,7 +111,7 @@ class SQLGenerator:
             max_tool_attempts: 컬럼 파서 재시도 횟수.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
         self._column_parser = column_parser
@@ -138,7 +139,7 @@ class SQLGenerator:
 
         return self._last_column_parser_used
 
-    def generate_sql(self, payload: SQLGenerationInput) -> str:
+    async def generate_sql(self, payload: SQLGenerationInput) -> str:
         """
         SQL을 생성한다.
 
@@ -159,9 +160,9 @@ class SQLGenerator:
             context_hint=payload.context_hint or "없음",
             fewshot_examples=fewshot_examples,
         )
-        return self._generate_with_column_parser(prompt)
+        return await self._generate_with_column_parser(prompt)
 
-    def repair_sql(self, payload: SQLRepairInput) -> str:
+    async def repair_sql(self, payload: SQLRepairInput) -> str:
         """
         실패한 SQL을 한 번만 수정한다.
 
@@ -179,9 +180,9 @@ class SQLGenerator:
             metric_context=json.dumps(payload.metric_context, ensure_ascii=False),
             schema_context=payload.schema_context,
         )
-        return self._generate_with_column_parser(prompt)
+        return await self._generate_with_column_parser(prompt)
 
-    def generate_multi_step_sql(self, payload: MultiStepSQLInput) -> str:
+    async def generate_multi_step_sql(self, payload: MultiStepSQLInput) -> str:
         """
         멀티 스텝 계획을 단일 SQL로 합성한다.
 
@@ -203,9 +204,9 @@ class SQLGenerator:
             context_hint=payload.context_hint or "없음",
             fewshot_examples=fewshot_examples,
         )
-        return self._generate_with_column_parser(prompt)
+        return await self._generate_with_column_parser(prompt)
 
-    def _generate_with_column_parser(self, prompt: str) -> str:
+    async def _generate_with_column_parser(self, prompt: str) -> str:
         """
         컬럼 파서 도구를 포함해 SQL을 생성한다.
 
@@ -224,7 +225,7 @@ class SQLGenerator:
         ]
 
         if not self._column_parser:
-            response = self._client.chat.completions.create(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 messages=messages,
@@ -235,7 +236,7 @@ class SQLGenerator:
         tools = [self._column_parser.tool_schema()]
         sql = ""
         for attempt in range(self._max_tool_attempts):
-            response = self._client.chat.completions.create(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 messages=messages,
@@ -250,7 +251,7 @@ class SQLGenerator:
                         continue
                     args = _safe_json(call.function.arguments)
                     sql_text = str(args.get("sql") or "")
-                    tool_result = self._column_parser.parse(sql=sql_text)
+                    tool_result = await self._column_parser.parse(sql=sql_text)
                     self._last_column_parser = tool_result
                     self._last_column_parser_used = True
                     messages.append(
@@ -268,7 +269,7 @@ class SQLGenerator:
                 messages.append({"role": "user", "content": "SQL을 다시 출력해 주세요. SQL만 반환하세요."})
                 continue
 
-            validation = self._column_parser.parse(sql=sql)
+            validation = await self._column_parser.parse(sql=sql)
             self._last_column_parser = validation
             self._last_column_parser_used = True
             if validation.get("is_valid") or attempt == self._max_tool_attempts - 1:
@@ -324,7 +325,7 @@ def _build_tool_call_message(message: Any) -> dict[str, Any]:
     tool_calls가 포함된 assistant 메시지를 직렬화한다.
 
     Args:
-        message: OpenAI 응답 메시지.
+        message: LLM 응답 메시지.
 
     Returns:
         직렬화된 메시지.
@@ -378,14 +379,16 @@ def _build_column_feedback(result: dict[str, Any]) -> str:
 
 
 if __name__ == "__main__":
-    # 1) 코드블록 제거 테스트
-    sample = "```sql\nSELECT 1;\n```"
-    print(_strip_code_fence(sample))
+    async def _main() -> None:
+        # 1) 코드블록 제거 테스트
+        sample = "```sql\nSELECT 1;\n```"
+        print(_strip_code_fence(sample))
 
-    # 2) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 SQLGenerator 테스트를 건너뜁니다.")
-    else:
+        # 2) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 SQLGenerator 테스트를 건너뜁니다.")
+            return
+
         # 3) SQL 생성 테스트
         from pathlib import Path
 
@@ -400,13 +403,14 @@ if __name__ == "__main__":
         schema_store = SchemaStore(config.schema_json_path)
         if not config.schema_json_path.exists():
             print("schema.json이 없어 SQLGenerator 테스트를 건너뜁니다.")
-        else:
-            schema_store.ensure_loaded()
+            return
+
+        schema_store.ensure_loaded()
 
         metric = registry.get("win_pct")
-        if metric and config.schema_json_path.exists():
+        if metric:
             generator = SQLGenerator(model=config.model, temperature=0.0)
-            sql = generator.generate_sql(
+            sql = await generator.generate_sql(
                 SQLGenerationInput(
                     user_question="최근 시즌 승률 상위 5개 팀",
                     planned_slots={"metric": "win_pct", "top_k": 5, "season": "2022-23"},
@@ -416,3 +420,5 @@ if __name__ == "__main__":
                 )
             )
             print(sql)
+
+    asyncio.run(_main())

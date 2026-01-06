@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import sqlite3
 import sys
@@ -120,7 +121,7 @@ class EntityResolver:
 
     def tool_schema(self) -> dict[str, Any]:
         """
-        OpenAI tool schema를 반환한다.
+        LLM tool schema를 반환한다.
 
         Returns:
             tool schema 딕셔너리.
@@ -146,7 +147,7 @@ class EntityResolver:
             },
         }
 
-    def resolve(
+    async def resolve(
         self,
         *,
         query: str,
@@ -165,7 +166,7 @@ class EntityResolver:
             엔티티 보강 결과 딕셔너리.
         """
 
-        self._ensure_loaded()
+        await asyncio.to_thread(self._ensure_loaded)
 
         normalized_query = _normalize_token(query)
         team_hits = _match_teams(normalized_query, query, self._team_alias_index, limit=top_k)
@@ -637,12 +638,16 @@ def _dedupe_players(players: list[PlayerEntity]) -> list[PlayerEntity]:
 
 
 if __name__ == "__main__":
-    # 1) 환경 설정과 DB 경로를 확인한다.
-    config = load_config()
-    if not config.db_path.exists():
-        print(f"DB 파일을 찾지 못했습니다: {config.db_path}")
-    else:
+    async def _main() -> None:
+        # 1) 환경 설정과 DB 경로를 확인한다.
+        config = load_config()
+        if not config.db_path.exists():
+            print(f"DB 파일을 찾지 못했습니다: {config.db_path}")
+            return
+
         # 2) 샘플 질의에 대한 엔티티 보강 결과를 확인한다.
         resolver = EntityResolver(config.db_path)
-        sample = resolver.resolve(query="골스 최근 5경기", previous_entities=None, top_k=3)
+        sample = await resolver.resolve(query="골스 최근 5경기", previous_entities=None, top_k=3)
         print(sample)
+
+    asyncio.run(_main())

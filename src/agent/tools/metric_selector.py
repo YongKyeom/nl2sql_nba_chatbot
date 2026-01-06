@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ class MetricSelector:
 
     def tool_schema(self) -> dict[str, Any]:
         """
-        OpenAI tool schema를 반환한다.
+        LLM tool schema를 반환한다.
 
         Returns:
             tool schema 딕셔너리.
@@ -73,7 +74,7 @@ class MetricSelector:
             },
         }
 
-    def select(self, *, query: str, top_k: int = 5) -> dict[str, Any]:
+    async def select(self, *, query: str, top_k: int = 5) -> dict[str, Any]:
         """
         메트릭 후보를 선택한다.
 
@@ -113,11 +114,14 @@ def _metric_to_candidate(metric: MetricDefinition) -> MetricCandidate:
 
 
 if __name__ == "__main__":
-    # 1) 레지스트리를 로드해 메트릭 후보를 확인한다.
-    registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
-    registry.ensure_loaded()
+    async def _main() -> None:
+        # 1) 레지스트리를 로드해 메트릭 후보를 확인한다.
+        registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
+        registry.ensure_loaded()
 
-    # 2) 샘플 질의를 기반으로 후보를 출력한다.
-    selector = MetricSelector(registry)
-    sample_result = selector.select(query="2022-23 시즌 팀 득점 상위 5개 보여줘", top_k=5)
-    print(sample_result)
+        # 2) 샘플 질의를 기반으로 후보를 출력한다.
+        selector = MetricSelector(registry)
+        sample_result = await selector.select(query="2022-23 시즌 팀 득점 상위 5개 보여줘", top_k=5)
+        print(sample_result)
+
+    asyncio.run(_main())

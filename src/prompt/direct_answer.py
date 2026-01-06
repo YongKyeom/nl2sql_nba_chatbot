@@ -6,6 +6,7 @@ Direct Answer용 프롬프트 정의.
     metric_description: 메트릭 한글 설명.
     metric_formula: 메트릭 한글 공식/규칙.
     metric_cut_rules: 컷 규칙 요약 문자열.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -53,5 +54,8 @@ DIRECT_ANSWER_PROMPT = dedent(
 
 [컷 규칙]
 {metric_cut_rules}
+
+[대화 맥락]
+{conversation_context}
 """
 ).strip()

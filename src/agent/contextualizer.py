@@ -25,10 +25,6 @@ def build_context_hint(memory: ConversationMemory) -> str:
     if memory.last_sql:
         parts.append(f"last_sql={memory.last_sql}")
 
-    recent_dialogue = memory.short_term.build_recent_dialogue(limit=3)
-    if recent_dialogue != "없음":
-        parts.append(f"recent_dialogue:\n{recent_dialogue}")
-
     long_term_hint = memory.long_term.build_hint()
     if long_term_hint != "없음":
         parts.append(f"long_term:\n{long_term_hint}")

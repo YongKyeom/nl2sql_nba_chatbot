@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, AsyncIterator
 
 from src.agent.chain import AgentDependencies, build_agent_chain
+from src.agent.conversation_summarizer import ConversationSummarizer, ConversationSummarizerConfig
 from src.agent.fewshot_generator import FewshotGenerator
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
@@ -80,6 +82,13 @@ class AgentOrchestrator:
         self.memory: ConversationMemory = memory or ConversationMemory.persistent(config.memory_db_path)
 
         final_answer_model = resolved_options.final_answer_model or config.final_answer_model
+        self._summary_char_limit = config.conversation_summary_char_limit
+        self._summary_keep_turns = config.conversation_summary_keep_turns
+        self.memory.summary_char_limit = self._summary_char_limit
+        self.memory.summary_keep_turns = self._summary_keep_turns
+        self._conversation_summarizer = ConversationSummarizer(
+            ConversationSummarizerConfig(model=final_answer_model, temperature=0.0)
+        )
 
         # 1) 레지스트리/스키마 준비
         self.registry: MetricsRegistry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
@@ -149,7 +158,7 @@ class AgentOrchestrator:
 
         return ConversationMemory()
 
-    def invoke(self, user_message: str) -> dict[str, object]:
+    async def invoke(self, user_message: str) -> dict[str, object]:
         """
         에이전트를 실행한다.
 
@@ -164,28 +173,42 @@ class AgentOrchestrator:
         self.memory.start_turn(user_message)
 
         # 2) 체인 실행: 내부에서 SQL/결과/슬롯 같은 구조화 데이터가 메모리에 업데이트된다.
-        result = self._invoke_chain(user_message)
+        result = await self._invoke_chain(user_message)
+        final_answer = result.get("final_answer")
+        final_answer_stream = result.get("final_answer_stream")
+        if not isinstance(final_answer, str) and isinstance(final_answer_stream, AsyncIterator):
+            parts: list[str] = []
+            try:
+                async for chunk in final_answer_stream:
+                    parts.append(str(chunk))
+            except Exception:
+                parts = []
+            merged = "".join(parts).strip()
+            result["final_answer"] = merged
+            result["final_answer_stream"] = None
         if result.get("route") == "error":
-            self.memory.finish_turn(
+            await self.memory.finish_turn_async(
                 assistant_message=str(result.get("final_answer")),
                 route=str(result.get("route")),
                 sql=None,
                 planned_slots=None,
             )
+            await self._maybe_update_conversation_summary()
             return result
 
         # 3) 턴 마무리: 최종 응답과 함께 장기 메모리 학습(선호/기본값)을 갱신한다.
         final_answer = result.get("final_answer")
         planned_slots = result.get("planned_slots")
-        self.memory.finish_turn(
+        await self.memory.finish_turn_async(
             assistant_message=str(final_answer) if isinstance(final_answer, str) else None,
             route=str(result.get("route")) if result.get("route") else None,
             sql=str(result.get("sql")) if isinstance(result.get("sql"), str) else None,
             planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
         )
+        await self._maybe_update_conversation_summary()
         return result
 
-    def stream(self, user_message: str) -> Iterator[dict[str, object]]:
+    async def stream(self, user_message: str) -> AsyncIterator[dict[str, object]]:
         """
         LangGraph 스트리밍 API를 사용해 단계별 상태를 방출한다.
 
@@ -196,9 +219,9 @@ class AgentOrchestrator:
             부분 상태 딕셔너리.
         """
 
-        if not hasattr(self._chain, "stream"):
+        if not hasattr(self._chain, "astream"):
             # 스트리밍을 지원하지 않는 경우 폴백
-            yield {"event_type": "final", "node": None, "state": self.invoke(user_message)}
+            yield {"event_type": "final", "node": None, "state": await self.invoke(user_message)}
             return
 
         # 스트리밍에서는 메모리 턴 마킹만 하고, finish_turn은 최종 상태에서 처리한다.
@@ -208,18 +231,18 @@ class AgentOrchestrator:
 
         stream_mode = "debug"
         try:
-            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode=stream_mode)
+            stream_iter = self._chain.astream({"user_message": user_message}, stream_mode=stream_mode)
         except TypeError:
             stream_mode = "updates"
-            stream_iter = self._chain.stream({"user_message": user_message}, stream_mode=stream_mode)
+            stream_iter = self._chain.astream({"user_message": user_message}, stream_mode=stream_mode)
         except Exception:
-            fallback = self._invoke_chain(user_message)
-            self._finish_stream_turn(fallback)
+            fallback = await self._invoke_chain(user_message)
+            await self._finish_stream_turn(fallback)
             yield {"event_type": "final", "node": None, "state": fallback}
             return
 
         if stream_mode == "debug":
-            for event in stream_iter:
+            async for event in stream_iter:
                 if not isinstance(event, dict):
                     continue
                 event_type = event.get("type")
@@ -239,7 +262,7 @@ class AgentOrchestrator:
                         "state": dict(merged_state),
                     }
         else:
-            for state in stream_iter:
+            async for state in stream_iter:
                 if not isinstance(state, dict):
                     continue
                 merged_state.update(state)
@@ -247,15 +270,15 @@ class AgentOrchestrator:
                 yield {"event_type": "state", "node": None, "state": dict(merged_state)}
 
         if last_state is None:
-            fallback = self._invoke_chain(user_message)
-            self._finish_stream_turn(fallback)
+            fallback = await self._invoke_chain(user_message)
+            await self._finish_stream_turn(fallback)
             yield {"event_type": "final", "node": None, "state": fallback}
             return
 
-        self._finish_stream_turn(last_state)
+        await self._finish_stream_turn(last_state)
         yield {"event_type": "final", "node": None, "state": last_state}
 
-    def _invoke_chain(self, user_message: str) -> dict[str, object]:
+    async def _invoke_chain(self, user_message: str) -> dict[str, object]:
         """
         체인을 실행하고 결과를 반환한다.
 
@@ -267,7 +290,7 @@ class AgentOrchestrator:
         """
 
         try:
-            return self._chain.invoke({"user_message": user_message})
+            return await self._chain.ainvoke({"user_message": user_message})
         except Exception as exc:  # noqa: BLE001
             return {
                 "route": "error",
@@ -276,7 +299,7 @@ class AgentOrchestrator:
                 "final_answer": "요청을 처리하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
             }
 
-    def _finish_stream_turn(self, state: dict[str, object]) -> None:
+    async def _finish_stream_turn(self, state: dict[str, object]) -> None:
         """
         스트리밍 종료 시 메모리 턴을 마무리한다.
 
@@ -288,13 +311,18 @@ class AgentOrchestrator:
         """
 
         final_answer = state.get("final_answer")
+        final_answer_stream = state.get("final_answer_stream")
+        if not isinstance(final_answer, str) and isinstance(final_answer_stream, AsyncIterator):
+            state["final_answer_stream"] = self._wrap_stream_for_memory(state, final_answer_stream)
+            return
         planned_slots = state.get("planned_slots")
-        self.memory.finish_turn(
+        await self.memory.finish_turn_async(
             assistant_message=str(final_answer) if isinstance(final_answer, str) else None,
             route=str(state.get("route")) if state.get("route") else None,
             sql=str(state.get("sql")) if isinstance(state.get("sql"), str) else None,
             planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
         )
+        await self._maybe_update_conversation_summary()
 
     def reset_memory(self) -> None:
         """
@@ -326,6 +354,68 @@ class AgentOrchestrator:
 
         self.memory.reset_all()
 
+    async def _maybe_update_conversation_summary(self) -> None:
+        """
+        대화 요약을 갱신한다.
+
+        Returns:
+            None
+        """
+
+        short_term = self.memory.short_term
+        if not short_term.should_summarize(
+            max_chars=self._summary_char_limit,
+            keep_turns=self._summary_keep_turns,
+        ):
+            return
+
+        summary_source = short_term.build_summary_source(keep_turns=self._summary_keep_turns)
+        if not summary_source:
+            return
+
+        try:
+            summary = await self._conversation_summarizer.summarize(summary_source)
+        except Exception:
+            return
+
+        if summary:
+            short_term.apply_summary(summary, keep_turns=self._summary_keep_turns)
+
+    def _wrap_stream_for_memory(
+        self,
+        state: dict[str, object],
+        stream: AsyncIterator[str],
+    ) -> AsyncIterator[str]:
+        """
+        스트리밍 응답을 소비하면서 메모리를 갱신하는 래퍼를 만든다.
+
+        Args:
+            state: 최종 상태 딕셔너리.
+            stream: 원본 스트림.
+
+        Returns:
+            래핑된 스트림.
+        """
+
+        async def _wrapped() -> AsyncIterator[str]:
+            parts: list[str] = []
+            async for chunk in stream:
+                parts.append(str(chunk))
+                yield chunk
+
+            final_answer = "".join(parts).strip()
+            state["final_answer"] = final_answer
+            planned_slots = state.get("planned_slots")
+            await self.memory.finish_turn_async(
+                assistant_message=final_answer,
+                route=str(state.get("route")) if state.get("route") else None,
+                sql=str(state.get("sql")) if isinstance(state.get("sql"), str) else None,
+                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+            )
+            await self._maybe_update_conversation_summary()
+
+        return _wrapped()
+
     def dump_schema(self) -> None:
         """
         스키마를 덤프하고 스토어를 갱신한다.
@@ -345,14 +435,18 @@ class AgentOrchestrator:
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 오케스트레이터 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 오케스트레이터 테스트를 건너뜁니다.")
+            return
+
         # 2) 오케스트레이터 구성
         config = load_config()
         orchestrator = AgentOrchestrator(config=config)
 
         # 3) 샘플 질의 실행
-        result = orchestrator.invoke("최근 리그에서 승률 상위 5개 팀 알려줘")
+        result = await orchestrator.invoke("최근 리그에서 승률 상위 5개 팀 알려줘")
         print(result.get("final_answer"))
+
+    asyncio.run(_main())

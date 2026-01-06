@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.multi_step_plan import MULTI_STEP_PLAN_PROMPT
 from src.prompt.system import SYSTEM_PROMPT
@@ -62,11 +62,11 @@ class MultiStepPlanner:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
-    def plan(self, payload: MultiStepPlanInput) -> MultiStepPlanResult:
+    async def plan(self, payload: MultiStepPlanInput) -> MultiStepPlanResult:
         """
         멀티 스텝 계획을 결정한다.
 
@@ -84,7 +84,7 @@ class MultiStepPlanner:
             context_hint=payload.context_hint or "없음",
         )
         try:
-            response = self._client.chat.completions.create(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},

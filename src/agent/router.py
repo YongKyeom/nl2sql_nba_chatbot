@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.metrics.registry import MetricsRegistry
 from src.prompt.router import ROUTER_PROMPT
@@ -49,6 +49,7 @@ class RoutingContext:
 
     Args:
         user_message: 사용자 입력.
+        conversation_context: 최근 대화 컨텍스트.
         has_previous: 이전 결과 존재 여부.
         last_result_schema: 이전 결과 컬럼 목록.
         last_sql: 직전 SQL.
@@ -57,6 +58,7 @@ class RoutingContext:
     """
 
     user_message: str
+    conversation_context: str
     has_previous: bool
     last_result_schema: list[str] | None
     last_sql: str | None
@@ -185,11 +187,11 @@ class RouterLLM:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
-    def _invoke_router(self, prompt: str, *, force_json: bool) -> str:
+    async def _invoke_router(self, prompt: str, *, force_json: bool) -> str:
         """
         라우터 전용 LLM 호출을 수행한다.
 
@@ -212,10 +214,10 @@ class RouterLLM:
         if force_json:
             request["response_format"] = {"type": "json_object"}
 
-        response = self._client.chat.completions.create(**request)
+        response = await self._client.invoke(**request)
         return response.choices[0].message.content or ""
 
-    def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:
+    async def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:
         """
         라우팅을 결정한다.
 
@@ -233,6 +235,7 @@ class RouterLLM:
 
         prompt = ROUTER_PROMPT.format(
             user_message=context.user_message,
+            conversation_context=context.conversation_context,
             has_previous=context.has_previous,
             last_result_schema=context.last_result_schema or [],
             last_sql=context.last_sql or "없음",
@@ -240,11 +243,11 @@ class RouterLLM:
             available_metrics=context.available_metrics,
         )
         try:
-            content = self._invoke_router(prompt, force_json=True)
+            content = await self._invoke_router(prompt, force_json=True)
             parsed = _parse_router_json(content)
         except Exception:  # noqa: BLE001
             try:
-                content = self._invoke_router(prompt, force_json=False)
+                content = await self._invoke_router(prompt, force_json=False)
                 parsed = _parse_router_json(content)
             except Exception:  # noqa: BLE001
                 return _fallback_route(
