@@ -129,17 +129,28 @@ def _print_debug_and_sql(result: dict[str, object]) -> None:
         None
     """
 
-    route = result.get("route")
-    route_reason = result.get("route_reason")
-    planned_slots = result.get("planned_slots")
-    if route or route_reason or planned_slots:
+    payload = {
+        "route": result.get("route"),
+        "route_reason": result.get("route_reason"),
+        "planned_slots": result.get("planned_slots"),
+        "metric_tool_used": result.get("metric_tool_used"),
+        "entity_tool_used": result.get("entity_tool_used"),
+        "metric_candidates": result.get("metric_candidates"),
+        "entity_resolution": result.get("entity_resolution"),
+        "multi_step_plan": result.get("multi_step_plan"),
+        "schema_context": result.get("schema_context"),
+        "fewshot_examples": result.get("fewshot_examples"),
+        "column_parser_used": result.get("column_parser_used"),
+        "column_parser": result.get("column_parser"),
+        "last_result_schema": result.get("last_result_schema"),
+        "error": result.get("error"),
+        "error_detail": result.get("error_detail"),
+    }
+    filtered = {key: value for key, value in payload.items() if value is not None}
+    if filtered:
         print("\n=== Debug ===")
-        if route:
-            print(f"route: {route}")
-        if route_reason:
-            print(f"route_reason: {route_reason}")
-        if planned_slots:
-            print(f"planned_slots: {planned_slots}")
+        for key, value in filtered.items():
+            print(f"{key}: {value}")
 
     sql = result.get("sql")
     if isinstance(sql, str) and sql:

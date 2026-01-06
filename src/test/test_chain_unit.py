@@ -478,6 +478,36 @@ def _skip_if_missing(path: Path, message: str) -> None:
         raise unittest.SkipTest(message)
 
 
+def _print_agent_debug(result: dict[str, object]) -> None:
+    """
+    에이전트 주요 출력 정보를 로그로 남긴다.
+
+    Args:
+        result: 에이전트 결과.
+    """
+
+    payload = {
+        "route": result.get("route"),
+        "route_reason": result.get("route_reason"),
+        "planned_slots": result.get("planned_slots"),
+        "metric_tool_used": result.get("metric_tool_used"),
+        "entity_tool_used": result.get("entity_tool_used"),
+        "metric_candidates": result.get("metric_candidates"),
+        "entity_resolution": result.get("entity_resolution"),
+        "multi_step_plan": result.get("multi_step_plan"),
+        "schema_context": result.get("schema_context"),
+        "fewshot_examples": result.get("fewshot_examples"),
+        "sql": result.get("sql"),
+        "column_parser_used": result.get("column_parser_used"),
+        "column_parser": result.get("column_parser"),
+        "last_result_schema": result.get("last_result_schema"),
+        "error": result.get("error"),
+        "error_detail": result.get("error_detail"),
+    }
+    print("\n=== Debug ===")
+    print({key: value for key, value in payload.items() if value is not None})
+
+
 async def run_query(
     query: str,
     *,
@@ -514,8 +544,7 @@ async def run_query(
     chain = build_agent_chain(deps)
     result = await chain.ainvoke({"user_message": query})
     if debug:
-        print("\n=== Debug ===")
-        print({"route": result.get("route"), "planned_slots": result.get("planned_slots")})
+        _print_agent_debug(result)
     return result
 
 
