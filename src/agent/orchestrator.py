@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from src.agent.chain import AgentDependencies, build_agent_chain
+from src.agent.conversation_summarizer import ConversationSummarizer, ConversationSummarizerConfig
 from src.agent.fewshot_generator import FewshotGenerator
 from src.agent.guard import SQLGuard
 from src.agent.memory import ConversationMemory
@@ -81,6 +82,13 @@ class AgentOrchestrator:
         self.memory: ConversationMemory = memory or ConversationMemory.persistent(config.memory_db_path)
 
         final_answer_model = resolved_options.final_answer_model or config.final_answer_model
+        self._summary_char_limit = config.conversation_summary_char_limit
+        self._summary_keep_turns = config.conversation_summary_keep_turns
+        self.memory.summary_char_limit = self._summary_char_limit
+        self.memory.summary_keep_turns = self._summary_keep_turns
+        self._conversation_summarizer = ConversationSummarizer(
+            ConversationSummarizerConfig(model=final_answer_model, temperature=0.0)
+        )
 
         # 1) 레지스트리/스키마 준비
         self.registry: MetricsRegistry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
@@ -166,6 +174,18 @@ class AgentOrchestrator:
 
         # 2) 체인 실행: 내부에서 SQL/결과/슬롯 같은 구조화 데이터가 메모리에 업데이트된다.
         result = await self._invoke_chain(user_message)
+        final_answer = result.get("final_answer")
+        final_answer_stream = result.get("final_answer_stream")
+        if not isinstance(final_answer, str) and isinstance(final_answer_stream, AsyncIterator):
+            parts: list[str] = []
+            try:
+                async for chunk in final_answer_stream:
+                    parts.append(str(chunk))
+            except Exception:
+                parts = []
+            merged = "".join(parts).strip()
+            result["final_answer"] = merged
+            result["final_answer_stream"] = None
         if result.get("route") == "error":
             await self.memory.finish_turn_async(
                 assistant_message=str(result.get("final_answer")),
@@ -173,6 +193,7 @@ class AgentOrchestrator:
                 sql=None,
                 planned_slots=None,
             )
+            await self._maybe_update_conversation_summary()
             return result
 
         # 3) 턴 마무리: 최종 응답과 함께 장기 메모리 학습(선호/기본값)을 갱신한다.
@@ -184,6 +205,7 @@ class AgentOrchestrator:
             sql=str(result.get("sql")) if isinstance(result.get("sql"), str) else None,
             planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
         )
+        await self._maybe_update_conversation_summary()
         return result
 
     async def stream(self, user_message: str) -> AsyncIterator[dict[str, object]]:
@@ -290,7 +312,8 @@ class AgentOrchestrator:
 
         final_answer = state.get("final_answer")
         final_answer_stream = state.get("final_answer_stream")
-        if not isinstance(final_answer, str) and final_answer_stream is not None:
+        if not isinstance(final_answer, str) and isinstance(final_answer_stream, AsyncIterator):
+            state["final_answer_stream"] = self._wrap_stream_for_memory(state, final_answer_stream)
             return
         planned_slots = state.get("planned_slots")
         await self.memory.finish_turn_async(
@@ -299,6 +322,7 @@ class AgentOrchestrator:
             sql=str(state.get("sql")) if isinstance(state.get("sql"), str) else None,
             planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
         )
+        await self._maybe_update_conversation_summary()
 
     def reset_memory(self) -> None:
         """
@@ -329,6 +353,68 @@ class AgentOrchestrator:
         """
 
         self.memory.reset_all()
+
+    async def _maybe_update_conversation_summary(self) -> None:
+        """
+        대화 요약을 갱신한다.
+
+        Returns:
+            None
+        """
+
+        short_term = self.memory.short_term
+        if not short_term.should_summarize(
+            max_chars=self._summary_char_limit,
+            keep_turns=self._summary_keep_turns,
+        ):
+            return
+
+        summary_source = short_term.build_summary_source(keep_turns=self._summary_keep_turns)
+        if not summary_source:
+            return
+
+        try:
+            summary = await self._conversation_summarizer.summarize(summary_source)
+        except Exception:
+            return
+
+        if summary:
+            short_term.apply_summary(summary, keep_turns=self._summary_keep_turns)
+
+    def _wrap_stream_for_memory(
+        self,
+        state: dict[str, object],
+        stream: AsyncIterator[str],
+    ) -> AsyncIterator[str]:
+        """
+        스트리밍 응답을 소비하면서 메모리를 갱신하는 래퍼를 만든다.
+
+        Args:
+            state: 최종 상태 딕셔너리.
+            stream: 원본 스트림.
+
+        Returns:
+            래핑된 스트림.
+        """
+
+        async def _wrapped() -> AsyncIterator[str]:
+            parts: list[str] = []
+            async for chunk in stream:
+                parts.append(str(chunk))
+                yield chunk
+
+            final_answer = "".join(parts).strip()
+            state["final_answer"] = final_answer
+            planned_slots = state.get("planned_slots")
+            await self.memory.finish_turn_async(
+                assistant_message=final_answer,
+                route=str(state.get("route")) if state.get("route") else None,
+                sql=str(state.get("sql")) if isinstance(state.get("sql"), str) else None,
+                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+            )
+            await self._maybe_update_conversation_summary()
+
+        return _wrapped()
 
     def dump_schema(self) -> None:
         """
