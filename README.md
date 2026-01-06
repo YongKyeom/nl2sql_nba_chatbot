@@ -8,6 +8,7 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 
 - **Scene/Orchestrator 구조**로 Streamlit/로컬 러너가 동일한 경로로 실행됩니다.
 - **LLM 라우터 + 플래너 + SQL 생성/가드 + 요약**까지 end-to-end 파이프라인 제공.
+- **Tool 기반 보강**: MetricSelector/EntityResolver/ColumnParser로 메트릭 선택, 엔티티 보강, 컬럼 검증을 수행.
 - **단기/장기 메모리 분리**로 멀티턴 문맥과 사용자 선호(기본 시즌 등) 유지.
 - **SQL Guard + 결과 검증 재시도**로 안정성 강화.
 - **이전 결과 재사용(정렬/필터/Top-K)** 및 일반 안내 응답 지원.
@@ -125,7 +126,7 @@ python -m src.db.schema_dump
 - **차트 출력**: 그래프/차트/시각화 요청 시 📊 차트 섹션 자동 렌더링
 - **차트 이미지 저장**: `result/plot/{user_id}/{chat_id}/` 경로에 PNG 저장(깃 추적 제외)
 - **채팅 목록**: 좌측 사이드바에서 채팅 선택/제목 수정/삭제 가능
-- **Thinking**: 라우팅/플래닝/SQL 진행 상태를 실시간 ⏳/✅로 표시(Details 토글)
+- **Thinking**: Routing → Planning → MetricSelector/EntityResolver → Schema Select → Few-shot → SQL → ColumnParser 진행 상태를 ⏳/✅로 표시(Details 토글)
 
 > 지원 차트 유형: `line`, `area`, `bar`, `stacked_bar`, `scatter`, `histogram`, `box`
 
@@ -160,6 +161,9 @@ python src/test/test_chain_unit.py
 3. "접전 경기(5점 이하) 최근 10개 보여줘"
 4. "팀 평균 리바운드 상위 5팀 알려줘"
 5. "관중 수 상위 10경기 알려줘"
+6. "2022-23 시즌 득점 상위 5팀과 리바운드 상위 5팀의 교집합을 찾아줘"
+7. "2022-23 시즌 백투백 경기 수 상위 10팀과 승률을 같이 보여줘"
+8. "LAL과 BOS 최근 맞대결 5경기 결과 알려줘"
 
 ### 멀티턴 예시
 1. "최근 리그에서 승률 상위 5개 팀 알려줘" → "상위 3개만"
@@ -215,7 +219,7 @@ LIMIT 50;
 
 ## 메트릭(metrics.yaml) 확장 가이드
 
-`src/metrics/metrics.yaml`의 **1개 항목 = 1개 지표/질의 템플릿**입니다. 현재 총 **244개** 메트릭이 있고, 모두 `examples`를 포함합니다.
+`src/metrics/metrics.yaml`의 **1개 항목 = 1개 지표/질의 템플릿**입니다. 메트릭 수는 `metrics.yaml` 기준이며, 각 항목은 `examples`를 포함합니다.
 
 필수 필드(권장 포함):
 
@@ -268,6 +272,9 @@ flowchart TD
   P --> FS["Fewshot Generator"]
   FS --> SG["SQL Generator"]
   P -->|멀티 스텝| MS["Multi-step Planner/Runner"]
+  P <--> MSel["MetricSelector Tool"]
+  P <--> ER["EntityResolver Tool"]
+  SG <--> CP["ColumnParser Tool"]
 
   O --> TS["Title Generator"]
   O --> CS["Chat Store"]
@@ -296,7 +303,9 @@ flowchart TD
 - **Orchestrator (`src/agent/orchestrator.py`)**: 레지스트리/스키마 로드, 체인 구성, 스트리밍 실행을 담당합니다. 예외 발생 시 안전한 폴백 응답을 만들고, 턴 시작/종료 시 메모리를 업데이트합니다.
 - **Router (`src/agent/router.py`)**: LLM 라우터가 기본이며 JSON 파싱 실패 시 키워드 폴백을 수행합니다.  
   메트릭 별칭을 통해 Direct/Reuse/SQL_REQUIRED를 분기하고 `route_reason`을 기록합니다.
-- **Planner (`src/agent/planner.py`)**: 엔티티/시즌/기간/지표/Top-K 슬롯을 구성하고, 부족하면 `clarify_question`을 제공합니다. 메트릭 누락 시 레지스트리 기준으로 보정/재시도합니다.
+- **Planner (`src/agent/planner.py`)**: 엔티티/시즌/기간/지표/Top-K 슬롯을 구성하고, 부족하면 `clarify_question`을 제공합니다. Tool 호출을 통해 메트릭 후보/엔티티 보강을 수행하고, 메트릭 누락 시 레지스트리 기준으로 재시도합니다.
+- **MetricSelector Tool (`src/agent/tools/metric_selector.py`)**: metrics.yaml에서 질의와 관련된 메트릭 후보를 Top-K로 선별합니다.
+- **EntityResolver Tool (`src/agent/tools/entity_resolver.py`)**: 팀/선수 이름(약칭 포함)을 표준화하고, 이전 결과 엔티티를 활용해 멀티턴 질의를 보강합니다.
 - **Clarifier (`src/prompt/clarify.py`)**: 플래너가 부족한 정보를 발견했을 때 확인 질문을 생성합니다.
 - **Reuse Answer (`src/agent/router.py` 내 `apply_reuse_rules`)**: 직전 결과에 대해 정렬/필터/Top-K 후처리를 적용합니다.
 - **Direct Answer (`src/agent/responder.py`)**: 메트릭 레지스트리 정의를 기반으로 지표 설명 응답을 생성합니다.
@@ -304,7 +313,8 @@ flowchart TD
 - **Fewshot Generator (`src/agent/fewshot_generator.py`)**: 후보 메트릭과 질의를 보고 필요한 테이블/컬럼을 선별하고, few-shot 예시를 구성합니다.
 - **Multi-step Planner/Runner (`src/agent/multi_step_planner.py`, `src/agent/chain.py`)**: 복합 질의를 단계별 질문으로 분해하고, 단계별 결과를 결합합니다.
 - **Multi-step Single SQL (`src/prompt/multi_step_sql.py`)**: 멀티스텝 계획이 JOIN으로 합성 가능한 경우, 한 번의 SQL(CTE + JOIN)로 합성해 실행합니다.
-- **SQL Generator (`src/agent/sql_generator.py`)**: 선별된 스키마/메트릭 정의/few-shot을 바탕으로 SQL을 생성합니다.
+- **SQL Generator (`src/agent/sql_generator.py`)**: 선별된 스키마/메트릭 정의/few-shot을 바탕으로 SQL을 생성합니다. ColumnParser 결과를 반영해 잘못된 테이블/컬럼이 있으면 재생성합니다.
+- **ColumnParser Tool (`src/agent/tools/column_parser.py`)**: 생성된 SQL에서 테이블/컬럼을 추출하고 스키마 정보를 주입해 검증 힌트를 제공합니다.
 - **SQL Guard (`src/agent/guard.py`)**: SELECT-only/조건 없는 JOIN 금지/LIMIT 강제 등 안전 규칙을 적용합니다.
 - **DB Execute (`src/db/sqlite_client.py`)**: SQL을 실행하고 DataFrame을 반환합니다.
 - **Result Validator (`src/agent/validator.py`)**: 0행/컬럼 없음/NULL 과다를 감지해 재시도 여부를 결정합니다.
