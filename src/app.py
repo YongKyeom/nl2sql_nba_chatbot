@@ -1062,6 +1062,7 @@ class StreamlitChatApp:
                         schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
                         thinking_status=thinking_status,
+                        is_final=event_type == "final",
                     )
         except Exception:
             placeholder.empty()
@@ -1240,6 +1241,7 @@ class StreamlitChatApp:
         schema_context: str | None,
         message_index: int,
         thinking_status: dict[str, str] | None = None,
+        is_final: bool = True,
     ) -> None:
         """
         Thinking(단계별 상태)을 렌더링한다.
@@ -1261,6 +1263,7 @@ class StreamlitChatApp:
             schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
             thinking_status: 단계별 상태 딕셔너리(스트리밍용).
+            is_final: 최종 상태 여부(True면 접힌 상태로 렌더링).
 
         Side Effects:
             Thinking 패널 UI를 렌더링한다.
@@ -1273,7 +1276,7 @@ class StreamlitChatApp:
         if thinking_status:
             has_running = any(value == THINKING_STATUS_RUNNING for value in thinking_status.values())
             status_label = "⏳ Thinking" if has_running else "✅ Thinking"
-        with st.expander(status_label, expanded=False):
+        with st.expander(status_label, expanded=not is_final):
 
             def _render_step(label: str, status: str, data: dict[str, object] | None) -> None:
                 icon = "✅" if status == THINKING_STATUS_DONE else "⏳"
