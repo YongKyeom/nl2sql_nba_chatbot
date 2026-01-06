@@ -272,12 +272,19 @@ class DummyResponder:
 
         self._answer = answer
 
-    async def compose_direct(self, metric: Any, *, stream: bool = False) -> str:
+    async def compose_direct(
+        self,
+        metric: Any,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         Direct Answer 응답을 반환.
 
         Args:
             metric: 메트릭 정의.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -285,12 +292,19 @@ class DummyResponder:
 
         return self._answer
 
-    async def compose_general(self, user_message: str, *, stream: bool = False) -> str:
+    async def compose_general(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         일반 안내 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -298,13 +312,21 @@ class DummyResponder:
 
         return self._answer
 
-    async def compose_clarify(self, user_message: str, clarify_question: str, *, stream: bool = False) -> str:
+    async def compose_clarify(
+        self,
+        user_message: str,
+        clarify_question: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         확인 질문 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
             clarify_question: 확인 질문.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -318,6 +340,7 @@ class DummyResponder:
         reuse_summary: str,
         result_markdown: str,
         *,
+        conversation_context: str | None = None,
         stream: bool = False,
     ) -> str:
         """
@@ -327,6 +350,7 @@ class DummyResponder:
             user_message: 사용자 질문.
             reuse_summary: 후처리 요약.
             result_markdown: 마크다운 테이블.
+            conversation_context: 최근 대화 컨텍스트.
 
         Returns:
             응답 문자열.
@@ -334,12 +358,19 @@ class DummyResponder:
 
         return f"{self._answer} - {reuse_summary}"
 
-    async def compose_missing_metric(self, user_message: str, *, stream: bool = False) -> str:
+    async def compose_missing_metric(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str:
         """
         메트릭 누락 응답을 반환.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
             stream: 스트리밍 여부.
 
         Returns:

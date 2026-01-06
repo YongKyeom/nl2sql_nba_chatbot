@@ -49,12 +49,19 @@ class Responder:
         self._model = config.model
         self._temperature = config.temperature
 
-    async def compose_direct(self, metric: MetricDefinition, *, stream: bool = False) -> str | AsyncIterator[str]:
+    async def compose_direct(
+        self,
+        metric: MetricDefinition,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         Direct Answer 응답을 생성.
 
         Args:
             metric: 메트릭 정의.
+            conversation_context: 최근 대화 컨텍스트.
             stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
@@ -66,6 +73,7 @@ class Responder:
             metric_description=metric.description_ko,
             metric_formula=metric.formula_ko or "정의에 계산식이 명시되어 있지 않습니다.",
             metric_cut_rules=str(metric.cut_rules),
+            conversation_context=conversation_context or "없음",
         )
         return await self._invoke(prompt, stream=stream)
 
@@ -74,6 +82,7 @@ class Responder:
         user_message: str,
         clarify_question: str,
         *,
+        conversation_context: str | None = None,
         stream: bool = False,
     ) -> str | AsyncIterator[str]:
         """
@@ -82,13 +91,18 @@ class Responder:
         Args:
             user_message: 사용자 질문.
             clarify_question: 확인 질문.
+            conversation_context: 최근 대화 컨텍스트.
             stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
             응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = CLARIFY_PROMPT.format(user_message=user_message, clarify_question=clarify_question)
+        prompt = CLARIFY_PROMPT.format(
+            user_message=user_message,
+            clarify_question=clarify_question,
+            conversation_context=conversation_context or "없음",
+        )
         return await self._invoke(prompt, stream=stream)
 
     async def compose_reuse(
@@ -97,6 +111,7 @@ class Responder:
         reuse_summary: str,
         result_markdown: str,
         *,
+        conversation_context: str | None = None,
         stream: bool = False,
     ) -> str | AsyncIterator[str]:
         """
@@ -106,6 +121,7 @@ class Responder:
             user_message: 사용자 질문.
             reuse_summary: 후처리 요약.
             result_markdown: 마크다운 테이블.
+            conversation_context: 최근 대화 컨텍스트.
             stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
@@ -116,37 +132,58 @@ class Responder:
             user_message=user_message,
             reuse_summary=reuse_summary,
             result_markdown=result_markdown,
+            conversation_context=conversation_context or "없음",
         )
         return await self._invoke(prompt, stream=stream)
 
-    async def compose_missing_metric(self, user_message: str, *, stream: bool = False) -> str | AsyncIterator[str]:
+    async def compose_missing_metric(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         메트릭 정의 누락 응답을 생성.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
             stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
             응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = MISSING_METRIC_PROMPT.format(user_message=user_message)
+        prompt = MISSING_METRIC_PROMPT.format(
+            user_message=user_message,
+            conversation_context=conversation_context or "없음",
+        )
         return await self._invoke(prompt, stream=stream)
 
-    async def compose_general(self, user_message: str, *, stream: bool = False) -> str | AsyncIterator[str]:
+    async def compose_general(
+        self,
+        user_message: str,
+        *,
+        conversation_context: str | None = None,
+        stream: bool = False,
+    ) -> str | AsyncIterator[str]:
         """
         일반 안내 응답을 생성.
 
         Args:
             user_message: 사용자 질문.
+            conversation_context: 최근 대화 컨텍스트.
             stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
             응답 문자열 또는 스트리밍 이터레이터.
         """
 
-        prompt = GENERAL_ANSWER_PROMPT.format(user_message=user_message)
+        prompt = GENERAL_ANSWER_PROMPT.format(
+            user_message=user_message,
+            conversation_context=conversation_context or "없음",
+        )
         return await self._invoke(prompt, stream=stream)
 
     async def _invoke(self, prompt: str, *, stream: bool = False) -> str | AsyncIterator[str]:
