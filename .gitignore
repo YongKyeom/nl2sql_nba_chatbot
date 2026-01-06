@@ -57,6 +57,9 @@ wheels/
 .venv
 .secrets
 
+# 로그
+log/*.json
+
 # OS 및 IDE 설정
 .DS_Store
 Thumbs.db
