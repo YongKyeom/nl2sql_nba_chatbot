@@ -409,6 +409,14 @@ class ConversationMemory:
         self.short_term.last_slots = value
 
     @property
+    def last_entities(self) -> dict[str, list[str]]:  # noqa: D401 - 기존 인터페이스 유지
+        return self.short_term.last_entities
+
+    @last_entities.setter
+    def last_entities(self, value: dict[str, list[str]]) -> None:
+        self.short_term.last_entities = value
+
+    @property
     def last_route(self) -> str | None:  # noqa: D401 - 기존 인터페이스 유지
         return self.short_term.last_route
 

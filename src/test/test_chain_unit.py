@@ -150,6 +150,26 @@ class DummySQLGenerator:
 
         return self._sql
 
+    def get_last_column_parser(self) -> None:
+        """
+        컬럼 파서 결과를 반환한다.
+
+        Returns:
+            None
+        """
+
+        return None
+
+    def get_last_column_parser_used(self) -> bool:
+        """
+        컬럼 파서 사용 여부를 반환한다.
+
+        Returns:
+            False.
+        """
+
+        return False
+
 
 class DummyFewshotGenerator:
     """
