@@ -592,7 +592,7 @@ class StreamlitChatApp:
   {logo_html}
   <div class="hero">
     <div class="hero-title">NL2SQL 기반 NBA 챗봇</div>
-    <div class="hero-subtitle">자연어 질의를 하면 AI 에이전트가 스키마를 읽고 데이터를 종합 분석해 핵심을 알려드립니다.</div>
+    <div class="hero-subtitle">궁금한 내용을 자연어로 물어보면 AI 에이전트가 데이터베이스를 참고해 결과를 정리해드립니다.</div>
   </div>
 </div>
         """,
@@ -1891,10 +1891,6 @@ html, body, [class*="css"] {
   font-family: "Space Grotesk", sans-serif;
 }
 
-.stApp {
-  background: #f8fafc;
-}
-
 .stApp .block-container {
   padding-top: 2.4rem;
   padding-left: 2.4rem;
@@ -1929,9 +1925,7 @@ html, body, [class*="css"] {
   height: 52px;
   object-fit: contain;
   border-radius: 12px;
-  background: #ffffff;
   padding: 6px;
-  border: 1px solid #e2e8f0;
 }
 
 .hero-title {
@@ -1939,21 +1933,18 @@ html, body, [class*="css"] {
   font-weight: 700;
   line-height: 1.05;
   letter-spacing: -0.02em;
-  color: #0f172a;
 }
 
 .hero-subtitle {
   margin-top: 0.35rem;
   font-size: 1.05rem;
   line-height: 1.45;
-  color: #475569;
 }
 
 .section-label {
   margin: 1.2rem 0 0.6rem;
   font-size: 0.95rem;
   font-weight: 600;
-  color: #0f172a;
 }
 
 .thinking-pill {
@@ -1961,30 +1952,17 @@ html, body, [class*="css"] {
   margin: 0.4rem 0 0.6rem;
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #475569;
 }
 
 .stButton>button {
   border-radius: 999px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  color: #0f172a;
   font-weight: 600;
   padding: 0.35rem 0.9rem;
 }
 
 .stButton>button:hover {
-  border-color: #0f172a;
-  color: #0f172a;
-}
-
-section[data-testid="stSidebar"] {
-  background: #f1f5f9;
-  border-right: 1px solid #e2e8f0;
 }
 
 section[data-testid="stSidebar"] h2,
