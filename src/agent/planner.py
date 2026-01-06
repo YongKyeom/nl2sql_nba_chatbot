@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 from pydantic import BaseModel, Field
 
 from src.metrics.registry import MetricsRegistry
@@ -93,7 +93,7 @@ class Planner:
         self._entity_resolver = entity_resolver
         self._enable_tools = enable_tools and model and metric_selector and entity_resolver
         self._max_tool_calls = max(1, max_tool_calls)
-        self._client = OpenAI() if self._enable_tools else None
+        self._client = LLMOperator() if self._enable_tools else None
 
     def plan(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
         """
@@ -290,7 +290,7 @@ class Planner:
             self._entity_resolver.tool_schema(),
         ]
         for _ in range(self._max_tool_calls):
-            response = self._client.chat.completions.create(
+            response = self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
@@ -501,7 +501,7 @@ def _build_tool_call_message(message: Any) -> dict[str, Any]:
     tool_calls가 포함된 assistant 메시지를 직렬화한다.
 
     Args:
-        message: OpenAI 응답 메시지.
+        message: LLM 응답 메시지.
 
     Returns:
         직렬화된 메시지.

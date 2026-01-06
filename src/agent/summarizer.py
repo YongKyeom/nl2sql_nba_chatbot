@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.summarize import SUMMARY_PROMPT
 from src.prompt.system import SYSTEM_PROMPT
@@ -42,19 +43,20 @@ class Summarizer:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
-    def summarize(self, payload: SummaryInput) -> str:
+    def summarize(self, payload: SummaryInput, *, stream: bool = False) -> str | Iterator[str]:
         """
         요약 텍스트를 생성.
 
         Args:
             payload: 요약 입력.
+            stream: True면 스트리밍 이터레이터를 반환.
 
         Returns:
-            요약 문자열.
+            요약 문자열 또는 스트리밍 이터레이터.
         """
 
         prompt = SUMMARY_PROMPT.format(
@@ -63,13 +65,21 @@ class Summarizer:
             result_preview=json.dumps(payload.result_preview, ensure_ascii=False),
             applied_filters=payload.applied_filters,
         )
-        response = self._client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        if stream:
+            return self._client.stream(
+                model=self._model,
+                temperature=self._temperature,
+                messages=messages,
+            )
+
+        response = self._client.invoke(
             model=self._model,
             temperature=self._temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
         )
         return (response.choices[0].message.content or "").strip()
 

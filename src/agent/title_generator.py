@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.system import SYSTEM_PROMPT
 from src.prompt.title import TITLE_PROMPT
@@ -22,7 +22,7 @@ class TitleGenerator:
     temperature: float = 0.2
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "_client", OpenAI())
+        object.__setattr__(self, "_client", LLMOperator())
 
     def generate(self, user_question: str) -> str:
         """
@@ -36,7 +36,7 @@ class TitleGenerator:
         """
 
         prompt = TITLE_PROMPT.format(user_question=user_question)
-        response = self._client.chat.completions.create(
+        response = self._client.invoke(
             model=self.model,
             temperature=self.temperature,
             messages=[

@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.agent.memory import ConversationMemory
 from src.agent.scene import ChatbotScene, build_scene
 from src.agent.title_generator import TitleGenerator
 from src.chart.generator import ChartGenerator
@@ -251,6 +252,7 @@ class StreamlitChatApp:
                     chat_store=chat_store,
                     user_id=user_id,
                     chat_id=st.session_state.active_chat_id,
+                    memory=scene.memory,
                     show_thinking=False,
                 )
 
@@ -758,6 +760,7 @@ class StreamlitChatApp:
         chat_store: ChatStore,
         user_id: str,
         chat_id: str,
+        memory: ConversationMemory | None = None,
         show_thinking: bool = True,
     ) -> None:
         """
@@ -773,6 +776,7 @@ class StreamlitChatApp:
             chat_store: 채팅 저장소.
             user_id: 사용자 ID.
             chat_id: 채팅 ID.
+            memory: 대화 메모리(스트리밍 응답 보강용).
             show_thinking: Thinking 패널 표시 여부.
 
         Side Effects:
@@ -783,6 +787,7 @@ class StreamlitChatApp:
         """
 
         final_answer = result.get("final_answer")
+        final_answer_stream = result.get("final_answer_stream")
         sql = result.get("sql")
         dataframe = result.get("result_df")
         error = result.get("error")
@@ -798,24 +803,17 @@ class StreamlitChatApp:
         entity_tool_used = result.get("entity_tool_used")
         column_parser_used = result.get("column_parser_used")
 
-        if not isinstance(final_answer, str) or not final_answer.strip():
-            if isinstance(error, str) and error.strip():
-                final_answer = f"오류가 발생했습니다: {error}"
-            else:
-                final_answer = "응답을 생성하지 못했습니다."
-
         display_df: pd.DataFrame | None = None
+        table_markdown: str | None = None
         chart_spec: ChartSpec | None = None
         chart_image_path: str | None = None
         if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
             display_df = self._prepare_dataframe_for_display(dataframe, True)
             table_markdown = self._dataframe_to_markdown(display_df)
-            final_answer = self._merge_markdown_table(str(final_answer), table_markdown)
 
             if self._is_chart_request(user_text):
                 chart_spec = self._build_chart_spec(user_text, display_df, chart_generator)
                 if chart_spec:
-                    final_answer = self._ensure_chart_section(final_answer)
                     chart_result = chart_renderer.prepare_chart_image(
                         display_df,
                         chart_spec,
@@ -824,6 +822,25 @@ class StreamlitChatApp:
                         existing_path=None,
                     )
                     chart_image_path = chart_result.path
+
+        use_llm_stream = isinstance(final_answer_stream, Iterator)
+        base_answer = ""
+        if use_llm_stream:
+            base_answer = self._stream_llm_answer(final_answer_stream)
+        elif isinstance(final_answer, str):
+            base_answer = final_answer
+
+        if not base_answer.strip():
+            if isinstance(error, str) and error.strip():
+                base_answer = f"오류가 발생했습니다: {error}"
+            else:
+                base_answer = "응답을 생성하지 못했습니다."
+
+        final_answer = base_answer
+        if chart_spec:
+            final_answer = self._ensure_chart_section(final_answer)
+        if table_markdown:
+            final_answer = self._merge_markdown_table(final_answer, table_markdown)
 
         assistant_message = {
             "role": "assistant",
@@ -905,19 +922,33 @@ class StreamlitChatApp:
                 thinking_status=thinking_status,
             )
 
-        if chart_spec and isinstance(display_df, pd.DataFrame):
-            self._render_answer_with_chart(
-                str(final_answer),
-                display_df,
-                chart_spec,
-                user_id=user_id,
-                chat_id=chat_id,
-                chart_image_path=chart_image_path,
-                chart_renderer=chart_renderer,
-                stream=True,
-            )
+        if use_llm_stream:
+            if chart_spec and isinstance(display_df, pd.DataFrame):
+                st.markdown("📊 차트")
+                self._render_chart(
+                    display_df,
+                    chart_spec,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chart_image_path=chart_image_path,
+                    chart_renderer=chart_renderer,
+                )
+            if table_markdown and not self._has_markdown_table(base_answer):
+                st.markdown(table_markdown)
         else:
-            st.write_stream(self._stream_text(str(final_answer)))
+            if chart_spec and isinstance(display_df, pd.DataFrame):
+                self._render_answer_with_chart(
+                    str(final_answer),
+                    display_df,
+                    chart_spec,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chart_image_path=chart_image_path,
+                    chart_renderer=chart_renderer,
+                    stream=True,
+                )
+            else:
+                st.write_stream(self._stream_text(str(final_answer)))
 
         if isinstance(display_df, pd.DataFrame) and not display_df.empty:
             if chart_spec:
@@ -949,6 +980,14 @@ class StreamlitChatApp:
             error=error if isinstance(error, str) else None,
             user_id=user_id,
         )
+
+        if use_llm_stream and memory is not None:
+            memory.finish_turn(
+                assistant_message=final_answer,
+                route=str(route) if route else None,
+                sql=str(sql) if isinstance(sql, str) else None,
+                planned_slots=planned_slots if isinstance(planned_slots, dict) else None,
+            )
 
     def _run_agent_with_thinking(self, scene: ChatbotScene, user_message: str) -> dict[str, object]:
         """
@@ -1023,7 +1062,11 @@ class StreamlitChatApp:
             placeholder.empty()
             return scene.ask(user_message)
 
-        if final_state is None or final_state.get("final_answer") is None:
+        if final_state is None:
+            placeholder.empty()
+            return scene.ask(user_message)
+
+        if final_state.get("final_answer") is None and final_state.get("final_answer_stream") is None:
             placeholder.empty()
             return scene.ask(user_message)
 
@@ -1897,6 +1940,28 @@ class StreamlitChatApp:
             yield text[offset : offset + chunk_size]
             if delay_sec > 0:
                 time.sleep(delay_sec)
+
+    def _stream_llm_answer(self, stream: Iterator[str]) -> str:
+        """
+        LLM 스트리밍 응답을 출력하면서 전체 텍스트를 수집한다.
+
+        Args:
+            stream: LLM 스트리밍 이터레이터.
+
+        Returns:
+            수집된 전체 응답 문자열.
+        """
+
+        parts: list[str] = []
+
+        def _collector() -> Iterator[str]:
+            for chunk in stream:
+                text = str(chunk)
+                parts.append(text)
+                yield text
+
+        st.write_stream(_collector())
+        return "".join(parts).strip()
 
     def _apply_custom_theme(self) -> None:
         """

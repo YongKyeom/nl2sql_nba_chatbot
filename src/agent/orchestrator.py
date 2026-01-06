@@ -288,6 +288,9 @@ class AgentOrchestrator:
         """
 
         final_answer = state.get("final_answer")
+        final_answer_stream = state.get("final_answer_stream")
+        if not isinstance(final_answer, str) and final_answer_stream is not None:
+            return
         planned_slots = state.get("planned_slots")
         self.memory.finish_turn(
             assistant_message=str(final_answer) if isinstance(final_answer, str) else None,

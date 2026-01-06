@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.multi_step_sql import MULTI_STEP_SQL_PROMPT
 from src.prompt.sql_generation import SQL_FEWSHOT_EXAMPLES, SQL_GENERATION_PROMPT
@@ -110,7 +110,7 @@ class SQLGenerator:
             max_tool_attempts: 컬럼 파서 재시도 횟수.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
         self._column_parser = column_parser
@@ -224,7 +224,7 @@ class SQLGenerator:
         ]
 
         if not self._column_parser:
-            response = self._client.chat.completions.create(
+            response = self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 messages=messages,
@@ -235,7 +235,7 @@ class SQLGenerator:
         tools = [self._column_parser.tool_schema()]
         sql = ""
         for attempt in range(self._max_tool_attempts):
-            response = self._client.chat.completions.create(
+            response = self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 messages=messages,
@@ -324,7 +324,7 @@ def _build_tool_call_message(message: Any) -> dict[str, Any]:
     tool_calls가 포함된 assistant 메시지를 직렬화한다.
 
     Args:
-        message: OpenAI 응답 메시지.
+        message: LLM 응답 메시지.
 
     Returns:
         직렬화된 메시지.

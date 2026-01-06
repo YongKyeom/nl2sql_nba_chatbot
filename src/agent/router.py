@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.metrics.registry import MetricsRegistry
 from src.prompt.router import ROUTER_PROMPT
@@ -185,7 +185,7 @@ class RouterLLM:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
@@ -212,7 +212,7 @@ class RouterLLM:
         if force_json:
             request["response_format"] = {"type": "json_object"}
 
-        response = self._client.chat.completions.create(**request)
+        response = self._client.invoke(**request)
         return response.choices[0].message.content or ""
 
     def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:

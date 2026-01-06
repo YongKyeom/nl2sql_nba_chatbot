@@ -240,7 +240,7 @@ class DummySummarizer:
 
         self._answer = answer
 
-    def summarize(self, payload: Any) -> str:
+    def summarize(self, payload: Any, *, stream: bool = False) -> str:
         """
         요약 문자열을 반환.
 
@@ -272,7 +272,7 @@ class DummyResponder:
 
         self._answer = answer
 
-    def compose_direct(self, metric: Any) -> str:
+    def compose_direct(self, metric: Any, *, stream: bool = False) -> str:
         """
         Direct Answer 응답을 반환.
 
@@ -285,7 +285,7 @@ class DummyResponder:
 
         return self._answer
 
-    def compose_general(self, user_message: str) -> str:
+    def compose_general(self, user_message: str, *, stream: bool = False) -> str:
         """
         일반 안내 응답을 반환.
 
@@ -298,7 +298,7 @@ class DummyResponder:
 
         return self._answer
 
-    def compose_clarify(self, user_message: str, clarify_question: str) -> str:
+    def compose_clarify(self, user_message: str, clarify_question: str, *, stream: bool = False) -> str:
         """
         확인 질문 응답을 반환.
 
@@ -312,7 +312,14 @@ class DummyResponder:
 
         return f"{self._answer} - {clarify_question}"
 
-    def compose_reuse(self, user_message: str, reuse_summary: str, result_markdown: str) -> str:
+    def compose_reuse(
+        self,
+        user_message: str,
+        reuse_summary: str,
+        result_markdown: str,
+        *,
+        stream: bool = False,
+    ) -> str:
         """
         후처리 응답을 반환.
 
@@ -326,6 +333,20 @@ class DummyResponder:
         """
 
         return f"{self._answer} - {reuse_summary}"
+
+    def compose_missing_metric(self, user_message: str, *, stream: bool = False) -> str:
+        """
+        메트릭 누락 응답을 반환.
+
+        Args:
+            user_message: 사용자 질문.
+            stream: 스트리밍 여부.
+
+        Returns:
+            응답 문자열.
+        """
+
+        return self._answer
 
     def compose_missing_metric(self, user_message: str) -> str:
         """

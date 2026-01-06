@@ -63,19 +63,38 @@ class _Tee:
             stream.flush()
 
 
-def run_live_query(query: str, *, scene: ChatbotScene) -> dict[str, object]:
+def run_live_query(query: str, *, scene: ChatbotScene, stream_output: bool = False) -> dict[str, object]:
     """
     실제 LLM 구성으로 질의를 실행한다.
 
     Args:
         query: 사용자 질문.
         scene: Scene 인스턴스.
+        stream_output: True면 최종 응답 스트림을 즉시 출력한다.
 
     Returns:
         에이전트 결과 딕셔너리.
     """
 
-    return scene.ask(query)
+    result = scene.ask(query)
+    stream = result.get("final_answer_stream")
+    if stream and result.get("final_answer") is None:
+        parts: list[str] = []
+        if stream_output:
+            for chunk in stream:
+                chunk_text = str(chunk)
+                parts.append(chunk_text)
+                print(chunk_text, end="", flush=True)
+            print()
+            result["streamed_output"] = True
+        else:
+            for chunk in stream:
+                parts.append(str(chunk))
+            result["streamed_output"] = False
+        result["final_answer"] = "".join(parts).strip()
+    else:
+        result["streamed_output"] = False
+    return result
 
 
 def _build_scene(config: AppConfig, *, memory: ConversationMemory | None = None) -> ChatbotScene:
@@ -98,22 +117,16 @@ def _build_scene(config: AppConfig, *, memory: ConversationMemory | None = None)
     )
 
 
-def _print_result(query: str, result: dict[str, object]) -> None:
+def _print_debug_and_sql(result: dict[str, object]) -> None:
     """
-    결과를 콘솔에 출력한다.
+    디버그 정보와 SQL을 콘솔에 출력한다.
 
     Args:
-        query: 사용자 질문.
         result: 에이전트 결과.
 
     Returns:
         None
     """
-
-    print("\n=== 질문 ===")
-    print(query)
-    print("\n=== 답변 ===")
-    print(result.get("final_answer"))
 
     route = result.get("route")
     route_reason = result.get("route_reason")
@@ -191,8 +204,13 @@ if __name__ == "__main__":
             sys.stdout = tee_stdout
             sys.stderr = tee_stderr
             for query in querys:
-                result = run_live_query(query, scene=scene)
-                _print_result(query, result)
+                print("\n=== 질문 ===")
+                print(query)
+                print("\n=== 답변 ===")
+                result = run_live_query(query, scene=scene, stream_output=True)
+                if not result.get("streamed_output"):
+                    print(result.get("final_answer"))
+                _print_debug_and_sql(result)
             print()
         finally:
             sys.stdout = original_stdout

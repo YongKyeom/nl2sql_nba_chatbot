@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import re
 import traceback
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
@@ -57,6 +58,7 @@ class AgentState(TypedDict, total=False):
     result_df: pd.DataFrame | None
     last_result_schema: list[str] | None
     final_answer: str | None
+    final_answer_stream: Iterator[str] | None
     error: str | None
     error_detail: dict[str, Any] | None
 
@@ -270,9 +272,11 @@ def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentStat
 
     try:
         if metric is None:
-            return {"final_answer": deps.responder.compose_missing_metric(state["user_message"])}
+            response = deps.responder.compose_missing_metric(state["user_message"], stream=True)
+            return _build_answer_payload(response)
 
-        return {"final_answer": deps.responder.compose_direct(metric)}
+        response = deps.responder.compose_direct(metric, stream=True)
+        return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
             "error": f"Direct Answer 생성 실패: {exc}",
@@ -294,7 +298,8 @@ def _general_answer_node(state: AgentState, deps: AgentDependencies) -> AgentSta
     """
 
     try:
-        return {"final_answer": deps.responder.compose_general(state["user_message"])}
+        response = deps.responder.compose_general(state["user_message"], stream=True)
+        return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
             "error": f"일반 응답 생성 실패: {exc}",
@@ -329,7 +334,7 @@ def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     preview_markdown = records_to_markdown(preview_records)
 
     try:
-        response_text = deps.responder.compose_reuse(state["user_message"], reuse.summary, preview_markdown)
+        response_text = deps.responder.compose_reuse(state["user_message"], reuse.summary, preview_markdown, stream=True)
     except Exception as exc:  # noqa: BLE001
         return {
             "result_df": reuse.dataframe,
@@ -340,11 +345,12 @@ def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
             "final_answer": "후처리 결과를 생성하는 중 오류가 발생했습니다.",
         }
 
+    answer_payload = _build_answer_payload(response_text)
     return {
         "result_df": reuse.dataframe,
         "sql": deps.memory.last_sql,
         "last_result_schema": deps.memory.last_result_schema,
-        "final_answer": response_text,
+        **answer_payload,
     }
 
 
@@ -412,8 +418,8 @@ def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
 
     clarify_question = state.get("clarify_question", "추가 확인이 필요합니다.")
     try:
-        response_text = deps.responder.compose_clarify(state["user_message"], clarify_question)
-        return {"final_answer": response_text}
+        response_text = deps.responder.compose_clarify(state["user_message"], clarify_question, stream=True)
+        return _build_answer_payload(response_text)
     except Exception as exc:  # noqa: BLE001
         return {
             "error": f"확인 질문 생성 실패: {exc}",
@@ -1223,15 +1229,32 @@ def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentState:
                 sql=state.get("sql", ""),
                 result_preview=preview_dataframe(dataframe, max_rows=10),
                 applied_filters=applied_filters,
-            )
+            ),
+            stream=True,
         )
-        return {"final_answer": summary}
+        return _build_answer_payload(summary)
     except Exception as exc:  # noqa: BLE001
         return {
             "error": f"요약 생성 실패: {exc}",
             "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
             "final_answer": "요약 생성 중 오류가 발생했습니다.",
         }
+
+
+def _build_answer_payload(response: str | Iterator[str]) -> AgentState:
+    """
+    LLM 응답 유형에 맞춰 최종 답변 필드를 구성한다.
+
+    Args:
+        response: 문자열 또는 스트리밍 이터레이터.
+
+    Returns:
+        AgentState에 병합할 payload.
+    """
+
+    if isinstance(response, Iterator):
+        return {"final_answer_stream": response}
+    return {"final_answer": response}
 
 
 def _finalize_error_node(state: AgentState) -> AgentState:
@@ -1245,7 +1268,7 @@ def _finalize_error_node(state: AgentState) -> AgentState:
         업데이트된 상태.
     """
 
-    if state.get("final_answer"):
+    if state.get("final_answer") or state.get("final_answer_stream"):
         return {}
     error = state.get("error")
     if isinstance(error, str) and error.strip():

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.config import load_config
 from src.db.schema_store import SchemaStore
@@ -91,7 +91,7 @@ class FewshotGenerator:
             temperature: 생성 다양성 파라미터.
         """
 
-        self._client = OpenAI()
+        self._client = LLMOperator()
         self._model = model
         self._temperature = temperature
 
@@ -120,7 +120,7 @@ class FewshotGenerator:
             target_count=payload.target_count,
         )
         try:
-            response = self._client.chat.completions.create(
+            response = self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
@@ -158,7 +158,7 @@ class FewshotGenerator:
             context_hint=payload.context_hint or "없음",
         )
         try:
-            response = self._client.chat.completions.create(
+            response = self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},

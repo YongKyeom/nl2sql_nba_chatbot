@@ -120,7 +120,7 @@ class EntityResolver:
 
     def tool_schema(self) -> dict[str, Any]:
         """
-        OpenAI tool schema를 반환한다.
+        LLM tool schema를 반환한다.
 
         Returns:
             tool schema 딕셔너리.

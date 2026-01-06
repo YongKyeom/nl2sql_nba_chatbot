@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 from src.prompt.chart import CHART_PROMPT
 from src.chart.types import SUPPORTED_CHART_TYPES, format_chart_type_guide
@@ -26,16 +26,16 @@ class ChartGenerator:
 
     def __post_init__(self) -> None:
         """
-        OpenAI 클라이언트를 준비한다.
+        LLM 클라이언트를 준비한다.
 
         Side Effects:
-            내부에 OpenAI 클라이언트를 초기화한다.
+            내부에 LLM 클라이언트를 초기화한다.
 
         Raises:
             예외 없음.
         """
 
-        object.__setattr__(self, "_client", OpenAI())
+        object.__setattr__(self, "_client", LLMOperator())
 
     def generate(
         self,
@@ -72,7 +72,7 @@ class ChartGenerator:
             chart_type_guide=format_chart_type_guide(),
             chart_type_list=", ".join(SUPPORTED_CHART_TYPES),
         )
-        response = self._client.chat.completions.create(
+        response = self._client.invoke(
             model=self.model,
             temperature=self.temperature,
             response_format={"type": "json_object"},

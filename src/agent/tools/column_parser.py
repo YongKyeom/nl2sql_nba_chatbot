@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from src.model.llm_operator import LLMOperator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -37,17 +37,17 @@ class ColumnParser:
 
     def __post_init__(self) -> None:
         """
-        OpenAI 클라이언트를 준비한다.
+        LLM 클라이언트를 준비한다.
 
         Side Effects:
-            OpenAI 클라이언트를 초기화한다.
+            LLM 클라이언트를 초기화한다.
         """
 
-        object.__setattr__(self, "_client", OpenAI())
+        object.__setattr__(self, "_client", LLMOperator())
 
     def tool_schema(self) -> dict[str, Any]:
         """
-        OpenAI tool schema를 반환한다.
+        LLM tool schema를 반환한다.
 
         Returns:
             tool schema 딕셔너리.
@@ -100,7 +100,7 @@ class ColumnParser:
             sql=sql.strip(),
             available_tables=", ".join(self.schema_store.list_tables()),
         )
-        response = self._client.chat.completions.create(
+        response = self._client.invoke(
             model=self.model,
             temperature=self.temperature,
             response_format={"type": "json_object"},
