@@ -164,6 +164,7 @@ class StreamlitChatApp:
         user_id = self._get_user_id()
         chat_store = self._ensure_chat_store()
         active_chat_id = self._ensure_active_chat(chat_store, user_id)
+        st.session_state.chat_sessions = chat_store.list_sessions(user_id)
         selected_chat_id = self._render_chat_sidebar(chat_store, user_id, active_chat_id)
 
         # 3) 설정/모델 UI: 모델과 Temperature 변경을 먼저 반영한다.
@@ -456,19 +457,25 @@ class StreamlitChatApp:
         """
 
         st.sidebar.header("채팅")
-        if st.sidebar.button("새 채팅"):
+        if st.sidebar.button("새 채팅", use_container_width=True):
             new_chat_id = chat_store.create_session(user_id, title="새 대화")
             st.session_state.active_chat_id = new_chat_id
             st.session_state.loaded_chat_id = None
             st.session_state.messages = []
             st.session_state.chat_sessions = chat_store.list_sessions(user_id)
-            return new_chat_id
 
         sessions = chat_store.list_sessions(user_id)
+        if not sessions and st.session_state.chat_sessions:
+            sessions = st.session_state.chat_sessions
+        if not sessions and active_chat_id:
+            fallback = chat_store.get_session(user_id, active_chat_id)
+            if fallback:
+                sessions = [fallback]
         st.session_state.chat_sessions = sessions
         if not sessions:
             return active_chat_id
 
+        active_chat_id = st.session_state.active_chat_id or active_chat_id
         options = [session.chat_id for session in sessions]
         if active_chat_id not in options:
             active_chat_id = options[0]
@@ -695,6 +702,8 @@ class StreamlitChatApp:
                     st.markdown(str(message["content"]))
 
                 if isinstance(dataframe, pd.DataFrame) and not dataframe.empty:
+                    if chart_spec:
+                        st.markdown('<div class="chart-table-spacer"></div>', unsafe_allow_html=True)
                     self._render_result_summary(dataframe, planned_slots)
                     display_df = self._prepare_dataframe_for_display(dataframe, True)
                     if not self._has_markdown_table(str(message.get("content", ""))):
@@ -887,6 +896,8 @@ class StreamlitChatApp:
             st.write_stream(self._stream_text(str(final_answer)))
 
         if isinstance(display_df, pd.DataFrame) and not display_df.empty:
+            if chart_spec:
+                st.markdown('<div class="chart-table-spacer"></div>', unsafe_allow_html=True)
             self._render_result_summary(display_df, planned_slots)
             if not self._has_markdown_table(str(final_answer)):
                 st.dataframe(display_df, use_container_width=True)
@@ -1884,15 +1895,33 @@ html, body, [class*="css"] {
   background: #f8fafc;
 }
 
-.hero {
-  padding: 0.1rem 0 0.2rem;
+.stApp .block-container {
+  padding-top: 2.4rem;
+  padding-left: 2.4rem;
+  padding-right: 2.4rem;
+}
+
+@media (max-width: 900px) {
+  .stApp .block-container {
+    padding-top: 2rem;
+    padding-left: 1.2rem;
+    padding-right: 1.2rem;
+  }
 }
 
 .hero-wrap {
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin: 0.6rem 0 0.2rem;
+  align-items: flex-start;
+  gap: 0.9rem;
+  margin: 0.6rem 0 0.9rem;
+  padding: 0 0.15rem;
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.1rem 0 0.2rem;
 }
 
 .hero-logo {
@@ -1908,6 +1937,7 @@ html, body, [class*="css"] {
 .hero-title {
   font-size: 2.4rem;
   font-weight: 700;
+  line-height: 1.05;
   letter-spacing: -0.02em;
   color: #0f172a;
 }
@@ -1915,6 +1945,7 @@ html, body, [class*="css"] {
 .hero-subtitle {
   margin-top: 0.35rem;
   font-size: 1.05rem;
+  line-height: 1.45;
   color: #475569;
 }
 
@@ -1956,11 +1987,32 @@ section[data-testid="stSidebar"] {
   border-right: 1px solid #e2e8f0;
 }
 
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] h4 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+section[data-testid="stSidebar"] hr {
+  margin: 0.85rem 0;
+}
+
 section[data-testid="stSidebar"] .stButton>button {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
   justify-content: flex-start;
   text-align: left;
-  padding-left: 0.9rem;
-  padding-right: 0.9rem;
+  padding: 0.42rem 0.9rem;
+  min-height: 40px;
+  line-height: 1.1;
+}
+
+section[data-testid="stSidebar"] .stButton>button > div {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
 }
 
 section[data-testid="stSidebar"] .stButton>button span {
@@ -1973,6 +2025,16 @@ section[data-testid="stSidebar"] .stButton>button span {
 
 section[data-testid="stSidebar"] button {
   border-radius: 16px;
+}
+
+section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
+  min-width: 36px;
+  padding: 0.2rem 0.35rem;
+  line-height: 1;
+}
+
+.chart-table-spacer {
+  height: 1.4rem;
 }
 </style>
             """,
