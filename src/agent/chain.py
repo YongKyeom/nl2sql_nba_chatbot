@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 import traceback
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
@@ -58,7 +59,7 @@ class AgentState(TypedDict, total=False):
     result_df: pd.DataFrame | None
     last_result_schema: list[str] | None
     final_answer: str | None
-    final_answer_stream: Iterator[str] | None
+    final_answer_stream: AsyncIterator[str] | None
     error: str | None
     error_detail: dict[str, Any] | None
 
@@ -128,20 +129,62 @@ def build_agent_chain(deps: AgentDependencies):
 
     graph = StateGraph(AgentState)
 
-    graph.add_node("router", lambda state: _router_node(state, deps))
-    graph.add_node("general_answer", lambda state: _general_answer_node(state, deps))
-    graph.add_node("direct_answer", lambda state: _direct_answer_node(state, deps))
-    graph.add_node("reuse", lambda state: _reuse_node(state, deps))
-    graph.add_node("plan", lambda state: _plan_node(state, deps))
-    graph.add_node("clarify", lambda state: _clarify_node(state, deps))
-    graph.add_node("multi_step", lambda state: _multi_step_node(state, deps))
-    graph.add_node("multi_step_single_sql", lambda state: _multi_step_single_sql_node(state, deps))
-    graph.add_node("fewshot", lambda state: _fewshot_node(state, deps))
-    graph.add_node("generate_sql", lambda state: _generate_sql_node(state, deps))
-    graph.add_node("guard", lambda state: _guard_node(state, deps))
-    graph.add_node("execute", lambda state: _execute_node(state, deps))
-    graph.add_node("validate", lambda state: _validate_node(state, deps))
-    graph.add_node("summarize", lambda state: _summarize_node(state, deps))
+    async def _router(state: AgentState) -> AgentState:
+        return await _router_node(state, deps)
+
+    async def _general_answer(state: AgentState) -> AgentState:
+        return await _general_answer_node(state, deps)
+
+    async def _direct_answer(state: AgentState) -> AgentState:
+        return await _direct_answer_node(state, deps)
+
+    async def _reuse(state: AgentState) -> AgentState:
+        return await _reuse_node(state, deps)
+
+    async def _plan(state: AgentState) -> AgentState:
+        return await _plan_node(state, deps)
+
+    async def _clarify(state: AgentState) -> AgentState:
+        return await _clarify_node(state, deps)
+
+    async def _multi_step(state: AgentState) -> AgentState:
+        return await _multi_step_node(state, deps)
+
+    async def _multi_step_single_sql(state: AgentState) -> AgentState:
+        return await _multi_step_single_sql_node(state, deps)
+
+    async def _fewshot(state: AgentState) -> AgentState:
+        return await _fewshot_node(state, deps)
+
+    async def _generate_sql(state: AgentState) -> AgentState:
+        return await _generate_sql_node(state, deps)
+
+    async def _guard(state: AgentState) -> AgentState:
+        return await _guard_node(state, deps)
+
+    async def _execute(state: AgentState) -> AgentState:
+        return await _execute_node(state, deps)
+
+    async def _validate(state: AgentState) -> AgentState:
+        return await _validate_node(state, deps)
+
+    async def _summarize(state: AgentState) -> AgentState:
+        return await _summarize_node(state, deps)
+
+    graph.add_node("router", _router)
+    graph.add_node("general_answer", _general_answer)
+    graph.add_node("direct_answer", _direct_answer)
+    graph.add_node("reuse", _reuse)
+    graph.add_node("plan", _plan)
+    graph.add_node("clarify", _clarify)
+    graph.add_node("multi_step", _multi_step)
+    graph.add_node("multi_step_single_sql", _multi_step_single_sql)
+    graph.add_node("fewshot", _fewshot)
+    graph.add_node("generate_sql", _generate_sql)
+    graph.add_node("guard", _guard)
+    graph.add_node("execute", _execute)
+    graph.add_node("validate", _validate)
+    graph.add_node("summarize", _summarize)
     graph.add_node("finalize_error", _finalize_error_node)
 
     graph.set_entry_point("router")
@@ -225,7 +268,7 @@ def build_agent_chain(deps: AgentDependencies):
     return graph.compile()
 
 
-def _router_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _router_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     라우터 노드.
 
@@ -246,13 +289,13 @@ def _router_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         available_metrics=_build_metric_aliases(deps.registry),
     )
 
-    result = deps.router.route(context, deps.registry)
+    result = await deps.router.route(context, deps.registry)
 
     deps.memory.update_route(result.route.value)
     return {"route": result.route.value, "metric_name": result.metric_name, "route_reason": result.reason}
 
 
-def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     Direct Answer 노드.
 
@@ -272,10 +315,10 @@ def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentStat
 
     try:
         if metric is None:
-            response = deps.responder.compose_missing_metric(state["user_message"], stream=True)
+            response = await deps.responder.compose_missing_metric(state["user_message"], stream=True)
             return _build_answer_payload(response)
 
-        response = deps.responder.compose_direct(metric, stream=True)
+        response = await deps.responder.compose_direct(metric, stream=True)
         return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -285,7 +328,7 @@ def _direct_answer_node(state: AgentState, deps: AgentDependencies) -> AgentStat
         }
 
 
-def _general_answer_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _general_answer_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     일반 안내 응답 노드.
 
@@ -298,7 +341,7 @@ def _general_answer_node(state: AgentState, deps: AgentDependencies) -> AgentSta
     """
 
     try:
-        response = deps.responder.compose_general(state["user_message"], stream=True)
+        response = await deps.responder.compose_general(state["user_message"], stream=True)
         return _build_answer_payload(response)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -308,7 +351,7 @@ def _general_answer_node(state: AgentState, deps: AgentDependencies) -> AgentSta
         }
 
 
-def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     이전 결과 재사용 노드.
 
@@ -334,7 +377,12 @@ def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     preview_markdown = records_to_markdown(preview_records)
 
     try:
-        response_text = deps.responder.compose_reuse(state["user_message"], reuse.summary, preview_markdown, stream=True)
+        response_text = await deps.responder.compose_reuse(
+            state["user_message"],
+            reuse.summary,
+            preview_markdown,
+            stream=True,
+        )
     except Exception as exc:  # noqa: BLE001
         return {
             "result_df": reuse.dataframe,
@@ -354,7 +402,7 @@ def _reuse_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     }
 
 
-def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     플래너 노드.
 
@@ -370,7 +418,7 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     if deps.memory.last_slots:
         previous = PlannerSlots(**deps.memory.last_slots)
 
-    plan_output: PlannerOutput = deps.planner.plan_with_retry(
+    plan_output: PlannerOutput = await deps.planner.plan_with_retry(
         state["user_message"],
         previous,
         previous_entities=deps.memory.last_entities,
@@ -378,14 +426,14 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     )
     planned_slots = plan_output.slots.model_dump()
     _apply_entity_resolution(planned_slots, plan_output.entity_resolution)
-    _fill_recent_season(planned_slots, state["user_message"], deps.sqlite_client)
-    _normalize_season(planned_slots, deps.sqlite_client)
+    await _fill_recent_season(planned_slots, state["user_message"], deps.sqlite_client)
+    await _normalize_season(planned_slots, deps.sqlite_client)
     _apply_reference_filters(planned_slots, state["user_message"], deps.memory)
-    _apply_team_name_filter(planned_slots, state["user_message"], deps.sqlite_client)
+    await _apply_team_name_filter(planned_slots, state["user_message"], deps.sqlite_client)
     _override_season_comparison(planned_slots, state["user_message"])
-    _apply_default_season(planned_slots, state["user_message"], deps)
+    await _apply_default_season(planned_slots, state["user_message"], deps)
     _override_attendance_metric(planned_slots, state["user_message"])
-    multi_step_plan = _build_multi_step_plan_llm(
+    multi_step_plan = await _build_multi_step_plan_llm(
         state["user_message"],
         planned_slots,
         deps.schema_store,
@@ -405,7 +453,7 @@ def _plan_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     }
 
 
-def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     확인 질문 노드.
 
@@ -418,7 +466,11 @@ def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
 
     clarify_question = state.get("clarify_question", "추가 확인이 필요합니다.")
     try:
-        response_text = deps.responder.compose_clarify(state["user_message"], clarify_question, stream=True)
+        response_text = await deps.responder.compose_clarify(
+            state["user_message"],
+            clarify_question,
+            stream=True,
+        )
         return _build_answer_payload(response_text)
     except Exception as exc:  # noqa: BLE001
         return {
@@ -428,7 +480,7 @@ def _clarify_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         }
 
 
-def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     Few-shot 생성 노드.
 
@@ -452,7 +504,7 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         limit=deps.fewshot_candidate_limit,
     )
     full_schema_context = deps.schema_store.build_full_context(max_columns=12)
-    selection = deps.fewshot_generator.select_schema(
+    selection = await deps.fewshot_generator.select_schema(
         SchemaSelectionInput(
             user_question=user_message,
             planned_slots=planned_slots,
@@ -466,7 +518,7 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         schema_context = _build_schema_context_for_metrics(candidate_metrics, deps.schema_store)
 
     try:
-        fewshot_examples = deps.fewshot_generator.generate_examples(
+        fewshot_examples = await deps.fewshot_generator.generate_examples(
             FewshotGenerationInput(
                 user_question=user_message,
                 planned_slots=planned_slots,
@@ -482,7 +534,7 @@ def _fewshot_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     return {"fewshot_examples": fewshot_examples, "schema_context": schema_context}
 
 
-def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     SQL 생성 노드.
 
@@ -512,7 +564,7 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
     last_traceback = ""
     for attempt in range(MAX_SQL_RETRIES):
         try:
-            sql = deps.sql_generator.generate_sql(
+            sql = await deps.sql_generator.generate_sql(
                 SQLGenerationInput(
                     user_question=state["user_message"],
                     planned_slots=slots,
@@ -547,7 +599,7 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
     }
 
 
-def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     멀티 스텝 계획을 단일 SQL로 합성한다.
 
@@ -618,7 +670,7 @@ def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> A
 
     schema_context = state.get("schema_context") or deps.schema_store.build_context()
     try:
-        sql = deps.sql_generator.generate_multi_step_sql(
+        sql = await deps.sql_generator.generate_multi_step_sql(
             MultiStepSQLInput(
                 user_question=state["user_message"],
                 planned_slots=planned_slots_for_sql,
@@ -650,7 +702,7 @@ def _multi_step_single_sql_node(state: AgentState, deps: AgentDependencies) -> A
     }
 
 
-def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     멀티 스텝 실행 노드.
 
@@ -682,7 +734,7 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
             return {"error": "멀티 스텝 단계 형식이 올바르지 않습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
         step_question = str(step.get("question") or state["user_message"]).strip()
-        step_output = deps.planner.plan_with_retry(
+        step_output = await deps.planner.plan_with_retry(
             step_question,
             previous_slots,
             previous_entities=deps.memory.last_entities,
@@ -701,7 +753,7 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
             sql = template_sql
         else:
             try:
-                sql = deps.sql_generator.generate_sql(
+                sql = await deps.sql_generator.generate_sql(
                     SQLGenerationInput(
                         user_question=step_question,
                         planned_slots=step_slots,
@@ -727,12 +779,12 @@ def _multi_step_node(state: AgentState, deps: AgentDependencies) -> AgentState:
                 "final_answer": "요청하신 내용을 조회하지 못했습니다. 질문을 조금 더 구체화해 주세요.",
             }
 
-        guard_result = _guard_sql_with_retry(sql, step_question, step_slots, deps)
+        guard_result = await _guard_sql_with_retry(sql, step_question, step_slots, deps)
         if not guard_result:
             return {"error": "SQL 가드레일을 통과하지 못했습니다.", "final_answer": "요청을 처리할 수 없습니다."}
 
         try:
-            result = deps.sqlite_client.execute(guard_result)
+            result = await asyncio.to_thread(deps.sqlite_client.execute, guard_result)
         except Exception as exc:  # noqa: BLE001
             return {"error": f"SQL 실행 실패: {exc}", "final_answer": "SQL 실행 중 오류가 발생했습니다."}
 
@@ -800,7 +852,7 @@ def _apply_step_overrides(
     step_slots["filters"] = filters
 
 
-def _guard_sql_with_retry(
+async def _guard_sql_with_retry(
     sql: str,
     user_question: str,
     planned_slots: dict[str, Any],
@@ -828,7 +880,7 @@ def _guard_sql_with_retry(
     failed_sql = sql
 
     for _ in range(MAX_SQL_RETRIES):
-        repair_sql = deps.sql_generator.repair_sql(
+        repair_sql = await deps.sql_generator.repair_sql(
             SQLRepairInput(
                 user_question=user_question,
                 failed_sql=failed_sql,
@@ -1012,7 +1064,7 @@ def _infer_execution_mode(
     return "multi_sql"
 
 
-def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     SQL 가드 노드.
 
@@ -1038,7 +1090,7 @@ def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     failed_sql = sql
 
     for _ in range(MAX_SQL_RETRIES):
-        repair_sql = deps.sql_generator.repair_sql(
+        repair_sql = await deps.sql_generator.repair_sql(
             SQLRepairInput(
                 user_question=state["user_message"],
                 failed_sql=failed_sql,
@@ -1061,7 +1113,7 @@ def _guard_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     }
 
 
-def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     SQL 실행 노드.
 
@@ -1080,7 +1132,7 @@ def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
 
     for attempt in range(MAX_SQL_RETRIES):
         try:
-            result = deps.sqlite_client.execute(sql)
+            result = await asyncio.to_thread(deps.sqlite_client.execute, sql)
             deps.memory.update_sql_result(result.executed_sql, result.dataframe, state.get("planned_slots", {}))
             return {
                 "sql": result.executed_sql,
@@ -1090,7 +1142,7 @@ def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         except Exception as exc:  # noqa: BLE001
             failure_reason = f"SQL 실행 실패: {exc}"
             last_traceback = traceback.format_exc()
-            repair_sql = deps.sql_generator.repair_sql(
+            repair_sql = await deps.sql_generator.repair_sql(
                 SQLRepairInput(
                     user_question=state["user_message"],
                     failed_sql=sql,
@@ -1117,7 +1169,7 @@ def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     }
 
 
-def _validate_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _validate_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     결과 검증 노드.
 
@@ -1153,7 +1205,7 @@ def _validate_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     failure_reason = validation.reason
 
     for _ in range(MAX_SQL_RETRIES):
-        repair_sql = deps.sql_generator.repair_sql(
+        repair_sql = await deps.sql_generator.repair_sql(
             SQLRepairInput(
                 user_question=state["user_message"],
                 failed_sql=failed_sql,
@@ -1169,7 +1221,7 @@ def _validate_node(state: AgentState, deps: AgentDependencies) -> AgentState:
             continue
 
         try:
-            retry_result = deps.sqlite_client.execute(guard_result.sql)
+            retry_result = await asyncio.to_thread(deps.sqlite_client.execute, guard_result.sql)
         except Exception as exc:  # noqa: BLE001
             failure_reason = f"재시도 SQL 실행 실패: {exc}"
             failed_sql = guard_result.sql
@@ -1205,7 +1257,7 @@ def _validate_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     }
 
 
-def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentState:
+async def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     """
     요약 노드.
 
@@ -1223,7 +1275,7 @@ def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentState:
 
     applied_filters = _build_filter_summary(state.get("planned_slots", {}))
     try:
-        summary = deps.summarizer.summarize(
+        summary = await deps.summarizer.summarize(
             SummaryInput(
                 user_question=state["user_message"],
                 sql=state.get("sql", ""),
@@ -1241,7 +1293,7 @@ def _summarize_node(state: AgentState, deps: AgentDependencies) -> AgentState:
         }
 
 
-def _build_answer_payload(response: str | Iterator[str]) -> AgentState:
+def _build_answer_payload(response: str | AsyncIterator[str]) -> AgentState:
     """
     LLM 응답 유형에 맞춰 최종 답변 필드를 구성한다.
 
@@ -1252,7 +1304,7 @@ def _build_answer_payload(response: str | Iterator[str]) -> AgentState:
         AgentState에 병합할 payload.
     """
 
-    if isinstance(response, Iterator):
+    if isinstance(response, AsyncIterator):
         return {"final_answer_stream": response}
     return {"final_answer": response}
 
@@ -1463,7 +1515,7 @@ def _apply_reference_filters(
         planned_slots["metric"] = "win_pct"
 
 
-def _apply_team_name_filter(
+async def _apply_team_name_filter(
     planned_slots: dict[str, Any],
     user_message: str,
     sqlite_client: SQLiteClient,
@@ -1489,7 +1541,7 @@ def _apply_team_name_filter(
         return
 
     lowered = user_message.lower()
-    team_catalog = _fetch_team_catalog(sqlite_client)
+    team_catalog = await _fetch_team_catalog(sqlite_client)
     if not team_catalog:
         return
 
@@ -1550,7 +1602,7 @@ def _apply_entity_resolution(
     planned_slots["filters"] = filters
 
 
-def _fetch_team_catalog(sqlite_client: SQLiteClient) -> list[dict[str, str]]:
+async def _fetch_team_catalog(sqlite_client: SQLiteClient) -> list[dict[str, str]]:
     """
     팀 이름/약어 목록을 조회한다.
 
@@ -1563,7 +1615,7 @@ def _fetch_team_catalog(sqlite_client: SQLiteClient) -> list[dict[str, str]]:
 
     sql = "SELECT full_name, abbreviation, nickname, city FROM team"
     try:
-        result = sqlite_client.execute(sql)
+        result = await asyncio.to_thread(sqlite_client.execute, sql)
     except Exception:
         return []
 
@@ -1769,7 +1821,7 @@ def _looks_like_team_performance_query(user_message: str) -> bool:
     return any(keyword in user_message for keyword in keywords)
 
 
-def _build_multi_step_plan_llm(
+async def _build_multi_step_plan_llm(
     user_message: str,
     planned_slots: dict[str, Any],
     schema_store: SchemaStore,
@@ -1792,7 +1844,7 @@ def _build_multi_step_plan_llm(
     """
 
     schema_context = schema_store.build_full_context(max_columns=8)
-    result = planner.plan(
+    result = await planner.plan(
         MultiStepPlanInput(
             user_question=user_message,
             planned_slots=planned_slots,
@@ -2146,7 +2198,7 @@ def _render_metric_template(metric: MetricDefinition, planned_slots: dict[str, A
         return None
 
 
-def _fill_recent_season(
+async def _fill_recent_season(
     planned_slots: dict[str, Any],
     user_message: str,
     sqlite_client: SQLiteClient,
@@ -2171,12 +2223,12 @@ def _fill_recent_season(
     if date_range != "최근" and "최근" not in user_message and "latest" not in lowered:
         return
 
-    latest_season = _fetch_latest_season(sqlite_client)
+    latest_season = await _fetch_latest_season(sqlite_client)
     if latest_season:
         planned_slots["season"] = latest_season
 
 
-def _fetch_latest_season(sqlite_client: SQLiteClient) -> str | None:
+async def _fetch_latest_season(sqlite_client: SQLiteClient) -> str | None:
     """
     사용 가능한 최신 시즌을 조회한다.
 
@@ -2193,7 +2245,7 @@ def _fetch_latest_season(sqlite_client: SQLiteClient) -> str | None:
         "ORDER BY season_id DESC LIMIT 1"
     )
     try:
-        result = sqlite_client.execute(sql)
+        result = await asyncio.to_thread(sqlite_client.execute, sql)
     except Exception:
         return None
 
@@ -2206,7 +2258,7 @@ def _fetch_latest_season(sqlite_client: SQLiteClient) -> str | None:
     return _season_id_to_year(str(value))
 
 
-def _normalize_season(planned_slots: dict[str, Any], sqlite_client: SQLiteClient) -> None:
+async def _normalize_season(planned_slots: dict[str, Any], sqlite_client: SQLiteClient) -> None:
     """
     시즌 값이 실제 데이터에 없으면 최신 시즌으로 보정한다.
 
@@ -2226,10 +2278,10 @@ def _normalize_season(planned_slots: dict[str, Any], sqlite_client: SQLiteClient
     if not season_id:
         return
 
-    if _season_id_exists(season_id, sqlite_client):
+    if await _season_id_exists(season_id, sqlite_client):
         return
 
-    latest = _fetch_latest_season(sqlite_client)
+    latest = await _fetch_latest_season(sqlite_client)
     if not latest:
         return
 
@@ -2239,7 +2291,7 @@ def _normalize_season(planned_slots: dict[str, Any], sqlite_client: SQLiteClient
     planned_slots["filters"] = filters
 
 
-def _apply_default_season(
+async def _apply_default_season(
     planned_slots: dict[str, Any],
     user_message: str,
     deps: AgentDependencies,
@@ -2285,7 +2337,7 @@ def _apply_default_season(
         return
 
     preferred = deps.memory.long_term.get_default_season()
-    season = preferred or _fetch_latest_season(deps.sqlite_client)
+    season = preferred or await _fetch_latest_season(deps.sqlite_client)
     if not season:
         return
 
@@ -2317,7 +2369,7 @@ def _metric_requires_season(metric: MetricDefinition) -> bool:
     return any(table in seasonal_tables for table in metric.required_tables)
 
 
-def _season_id_exists(season_id: str, sqlite_client: SQLiteClient) -> bool:
+async def _season_id_exists(season_id: str, sqlite_client: SQLiteClient) -> bool:
     """
     season_id가 데이터에 존재하는지 확인한다.
 
@@ -2336,7 +2388,7 @@ def _season_id_exists(season_id: str, sqlite_client: SQLiteClient) -> bool:
         "LIMIT 1"
     ).format(season_id=season_id)
     try:
-        result = sqlite_client.execute(sql)
+        result = await asyncio.to_thread(sqlite_client.execute, sql)
     except Exception:
         return False
     return not result.dataframe.empty

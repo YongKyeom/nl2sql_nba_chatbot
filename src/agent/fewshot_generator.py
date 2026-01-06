@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -95,7 +96,7 @@ class FewshotGenerator:
         self._model = model
         self._temperature = temperature
 
-    def generate_examples(self, payload: FewshotGenerationInput) -> str:
+    async def generate_examples(self, payload: FewshotGenerationInput) -> str:
         """
         few-shot 예시 문자열을 생성한다.
 
@@ -120,7 +121,7 @@ class FewshotGenerator:
             target_count=payload.target_count,
         )
         try:
-            response = self._client.invoke(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
@@ -139,7 +140,7 @@ class FewshotGenerator:
             return formatted
         return _format_examples(prebuilt, limit=payload.target_count) or SQL_FEWSHOT_EXAMPLES
 
-    def select_schema(self, payload: SchemaSelectionInput) -> SchemaSelectionResult:
+    async def select_schema(self, payload: SchemaSelectionInput) -> SchemaSelectionResult:
         """
         LLM을 사용해 필요한 테이블/컬럼을 선별한다.
 
@@ -158,7 +159,7 @@ class FewshotGenerator:
             context_hint=payload.context_hint or "없음",
         )
         try:
-            response = self._client.invoke(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
@@ -368,22 +369,25 @@ def _strip_code_fence(text: str) -> str:
 
 
 if __name__ == "__main__":
-    config = load_config()
-    registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
-    registry.ensure_loaded()
-    schema_store = SchemaStore(config.schema_json_path)
-    schema_store.ensure_loaded()
+    async def _main() -> None:
+        config = load_config()
+        registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
+        registry.ensure_loaded()
+        schema_store = SchemaStore(config.schema_json_path)
+        schema_store.ensure_loaded()
 
-    generator = FewshotGenerator(model=config.model, temperature=0.1)
-    metric = registry.search("팀 득점 상위", limit=1)
-    examples = generator.generate_examples(
-        FewshotGenerationInput(
-            user_question="2023-24 시즌 팀 득점 상위 10개 보여줘",
-            planned_slots={"metric": "top_scorers", "season": "2023-24", "top_k": 10, "filters": {}},
-            candidate_metrics=[registry.build_sql_context(metric[0])] if metric else [],
-            schema_context=schema_store.build_context(),
-            context_hint="없음",
-            target_count=3,
+        generator = FewshotGenerator(model=config.model, temperature=0.1)
+        metric = registry.search("팀 득점 상위", limit=1)
+        examples = await generator.generate_examples(
+            FewshotGenerationInput(
+                user_question="2023-24 시즌 팀 득점 상위 10개 보여줘",
+                planned_slots={"metric": "top_scorers", "season": "2023-24", "top_k": 10, "filters": {}},
+                candidate_metrics=[registry.build_sql_context(metric[0])] if metric else [],
+                schema_context=schema_store.build_context(),
+                context_hint="없음",
+                target_count=3,
+            )
         )
-    )
-    print(examples)
+        print(examples)
+
+    asyncio.run(_main())

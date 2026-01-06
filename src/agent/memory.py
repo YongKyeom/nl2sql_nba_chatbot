@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -245,6 +246,20 @@ class LongTermMemory:
             # 장기 메모리는 "있으면 좋고 없어도 동작해야" 한다.
             # 파일 잠금/권한 이슈로 저장이 실패하더라도 대화 흐름을 깨지 않는다.
             return
+
+    async def observe_async(self, *, user_message: str, planned_slots: dict[str, Any] | None) -> None:
+        """
+        장기 메모리 관찰 로직을 비동기 컨텍스트에서 실행한다.
+
+        Args:
+            user_message: 사용자 입력.
+            planned_slots: 플래너 슬롯(없으면 None).
+
+        Returns:
+            None
+        """
+
+        await asyncio.to_thread(self.observe, user_message=user_message, planned_slots=planned_slots)
 
     def get_default_season(self) -> str | None:
         """
@@ -535,6 +550,38 @@ class ConversationMemory:
             planned_slots=planned_slots,
         )
         self.long_term.observe(user_message=self.short_term.turns[-1].user_message, planned_slots=planned_slots)
+
+    async def finish_turn_async(
+        self,
+        *,
+        assistant_message: str | None,
+        route: str | None,
+        sql: str | None,
+        planned_slots: dict[str, Any] | None,
+    ) -> None:
+        """
+        직전 턴을 비동기 컨텍스트에서 마무리한다.
+
+        Args:
+            assistant_message: 최종 응답.
+            route: 라우팅 결과.
+            sql: 생성/실행 SQL.
+            planned_slots: 플래너 슬롯.
+
+        Returns:
+            None
+        """
+
+        self.short_term.finish_turn(
+            assistant_message=assistant_message,
+            route=route,
+            sql=sql,
+            planned_slots=planned_slots,
+        )
+        await self.long_term.observe_async(
+            user_message=self.short_term.turns[-1].user_message,
+            planned_slots=planned_slots,
+        )
 
 
 def _truncate(text: str, max_chars: int) -> str:

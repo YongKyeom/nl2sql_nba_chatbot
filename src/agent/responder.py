@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from src.model.llm_operator import LLMOperator
@@ -48,7 +49,7 @@ class Responder:
         self._model = config.model
         self._temperature = config.temperature
 
-    def compose_direct(self, metric: MetricDefinition, *, stream: bool = False) -> str | Iterator[str]:
+    async def compose_direct(self, metric: MetricDefinition, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         Direct Answer 응답을 생성.
 
@@ -66,15 +67,15 @@ class Responder:
             metric_formula=metric.formula_ko or "정의에 계산식이 명시되어 있지 않습니다.",
             metric_cut_rules=str(metric.cut_rules),
         )
-        return self._invoke(prompt, stream=stream)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_clarify(
+    async def compose_clarify(
         self,
         user_message: str,
         clarify_question: str,
         *,
         stream: bool = False,
-    ) -> str | Iterator[str]:
+    ) -> str | AsyncIterator[str]:
         """
         확인 질문 응답을 생성.
 
@@ -88,16 +89,16 @@ class Responder:
         """
 
         prompt = CLARIFY_PROMPT.format(user_message=user_message, clarify_question=clarify_question)
-        return self._invoke(prompt, stream=stream)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_reuse(
+    async def compose_reuse(
         self,
         user_message: str,
         reuse_summary: str,
         result_markdown: str,
         *,
         stream: bool = False,
-    ) -> str | Iterator[str]:
+    ) -> str | AsyncIterator[str]:
         """
         이전 결과 후처리 응답을 생성.
 
@@ -116,9 +117,9 @@ class Responder:
             reuse_summary=reuse_summary,
             result_markdown=result_markdown,
         )
-        return self._invoke(prompt, stream=stream)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_missing_metric(self, user_message: str, *, stream: bool = False) -> str | Iterator[str]:
+    async def compose_missing_metric(self, user_message: str, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         메트릭 정의 누락 응답을 생성.
 
@@ -131,9 +132,9 @@ class Responder:
         """
 
         prompt = MISSING_METRIC_PROMPT.format(user_message=user_message)
-        return self._invoke(prompt, stream=stream)
+        return await self._invoke(prompt, stream=stream)
 
-    def compose_general(self, user_message: str, *, stream: bool = False) -> str | Iterator[str]:
+    async def compose_general(self, user_message: str, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         일반 안내 응답을 생성.
 
@@ -146,9 +147,9 @@ class Responder:
         """
 
         prompt = GENERAL_ANSWER_PROMPT.format(user_message=user_message)
-        return self._invoke(prompt, stream=stream)
+        return await self._invoke(prompt, stream=stream)
 
-    def _invoke(self, prompt: str, *, stream: bool = False) -> str | Iterator[str]:
+    async def _invoke(self, prompt: str, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         LLM 호출을 수행.
 
@@ -171,7 +172,7 @@ class Responder:
                 messages=messages,
             )
 
-        response = self._client.invoke(
+        response = await self._client.invoke(
             model=self._model,
             temperature=self._temperature,
             messages=messages,
@@ -180,10 +181,12 @@ class Responder:
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 Responder 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 Responder 테스트를 건너뜁니다.")
+            return
+
         # 2) 일반 안내 응답 테스트
         from pathlib import Path
 
@@ -197,5 +200,7 @@ if __name__ == "__main__":
         metric = registry.get("win_pct")
 
         if metric:
-            print(responder.compose_direct(metric))
-        print(responder.compose_general("무슨 데이터를 알려줄 수 있어?"))
+            print(await responder.compose_direct(metric))
+        print(await responder.compose_general("무슨 데이터를 알려줄 수 있어?"))
+
+    asyncio.run(_main())

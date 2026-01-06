@@ -37,7 +37,7 @@ class ChatbotScene:
 
         return self.orchestrator.memory
 
-    def ask(self, user_message: str) -> dict[str, object]:
+    async def ask(self, user_message: str) -> dict[str, object]:
         """
         사용자 질문을 실행하고 결과를 반환한다.
 
@@ -48,7 +48,7 @@ class ChatbotScene:
             실행 결과 딕셔너리.
         """
 
-        return self.orchestrator.invoke(user_message)
+        return await self.orchestrator.invoke(user_message)
 
     def reset(self) -> None:
         """
