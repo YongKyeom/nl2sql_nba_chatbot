@@ -3,6 +3,7 @@
 
 변수:
     user_message: 사용자 질문 원문.
+    conversation_context: 최근 대화 컨텍스트.
 """
 
 from textwrap import dedent
@@ -31,6 +32,9 @@ GENERAL_ANSWER_PROMPT = dedent(
 - 데이터는 SQLite 로컬 DB 기반이며, 없는 정보는 조회할 수 없음을 한 줄로 알린다.
 - <output> 태그는 출력하지 않는다.
 - <...> 표시는 실제 내용으로 치환하고 그대로 출력하지 않는다.
+
+[대화 맥락]
+{conversation_context}
 
 [사용자 질문]
 {user_message}
