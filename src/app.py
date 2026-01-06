@@ -220,6 +220,7 @@ class StreamlitChatApp:
         # 6) 메인 화면: 헤더와 추천 질의를 보여준다.
         self._render_hero()
         quick_prompt = self._render_quick_prompts()
+        st.markdown('<div class="quick-prompts-spacer"></div>', unsafe_allow_html=True)
         self._render_messages(st.session_state.messages, chart_renderer=chart_renderer)
 
         # 7) 입력 처리: 질문 저장 -> 실행 -> 결과 반영 순서로 처리한다.
@@ -2012,6 +2013,10 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
 }
 
 .chart-table-spacer {
+  height: 1.4rem;
+}
+
+.quick-prompts-spacer {
   height: 1.4rem;
 }
 </style>
