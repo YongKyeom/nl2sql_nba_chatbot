@@ -749,7 +749,7 @@ class StreamlitChatApp:
             예외 없음.
         """
 
-        final_answer = result.get("final_answer", "응답을 생성하지 못했습니다.")
+        final_answer = result.get("final_answer")
         sql = result.get("sql")
         dataframe = result.get("result_df")
         error = result.get("error")
@@ -764,6 +764,12 @@ class StreamlitChatApp:
         metric_tool_used = result.get("metric_tool_used")
         entity_tool_used = result.get("entity_tool_used")
         column_parser_used = result.get("column_parser_used")
+
+        if not isinstance(final_answer, str) or not final_answer.strip():
+            if isinstance(error, str) and error.strip():
+                final_answer = f"오류가 발생했습니다: {error}"
+            else:
+                final_answer = "응답을 생성하지 못했습니다."
 
         display_df: pd.DataFrame | None = None
         chart_spec: ChartSpec | None = None

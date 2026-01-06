@@ -502,23 +502,37 @@ def _generate_sql_node(state: AgentState, deps: AgentDependencies) -> AgentState
     if template_sql:
         return {"sql": template_sql, "column_parser": None, "column_parser_used": False}
 
-    try:
-        sql = deps.sql_generator.generate_sql(
-            SQLGenerationInput(
-                user_question=state["user_message"],
-                planned_slots=slots,
-                metric_context=deps.registry.build_sql_context(metric),
-                schema_context=state.get("schema_context") or deps.schema_store.build_context(),
-                last_sql=deps.memory.last_sql,
-                context_hint=build_context_hint(deps.memory),
-                fewshot_examples=state.get("fewshot_examples"),
+    last_error: Exception | None = None
+    last_traceback = ""
+    for attempt in range(MAX_SQL_RETRIES):
+        try:
+            sql = deps.sql_generator.generate_sql(
+                SQLGenerationInput(
+                    user_question=state["user_message"],
+                    planned_slots=slots,
+                    metric_context=deps.registry.build_sql_context(metric),
+                    schema_context=state.get("schema_context") or deps.schema_store.build_context(),
+                    last_sql=deps.memory.last_sql,
+                    context_hint=build_context_hint(deps.memory),
+                    fewshot_examples=state.get("fewshot_examples"),
+                )
             )
-        )
-    except Exception as exc:  # noqa: BLE001
+            last_error = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            last_traceback = traceback.format_exc()
+            sql = ""
+
+    if last_error or not sql:
         return {
-            "error": f"SQL 생성 실패: {exc}",
-            "error_detail": {"exception": str(exc), "traceback": traceback.format_exc()},
-            "final_answer": "SQL 생성 중 오류가 발생했습니다.",
+            "error": f"SQL 생성 실패: {last_error}" if last_error else "SQL 생성 실패: 빈 SQL",
+            "error_detail": {
+                "exception": str(last_error) if last_error else "empty_sql",
+                "traceback": last_traceback,
+                "retry_count": MAX_SQL_RETRIES,
+            },
+            "final_answer": f"SQL 생성에 실패했습니다. {MAX_SQL_RETRIES}회 재시도했지만 오류가 발생했습니다.",
         }
     return {
         "sql": sql,
@@ -1058,7 +1072,7 @@ def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
     failure_reason = ""
     last_traceback = ""
 
-    for _ in range(MAX_SQL_RETRIES + 1):
+    for attempt in range(MAX_SQL_RETRIES):
         try:
             result = deps.sqlite_client.execute(sql)
             deps.memory.update_sql_result(result.executed_sql, result.dataframe, state.get("planned_slots", {}))
@@ -1088,8 +1102,12 @@ def _execute_node(state: AgentState, deps: AgentDependencies) -> AgentState:
 
     return {
         "error": failure_reason,
-        "error_detail": {"exception": failure_reason, "traceback": last_traceback},
-        "final_answer": "쿼리 실행 중 오류가 발생했습니다.",
+        "error_detail": {
+            "exception": failure_reason,
+            "traceback": last_traceback,
+            "retry_count": MAX_SQL_RETRIES,
+        },
+        "final_answer": f"쿼리 실행에 실패했습니다. {MAX_SQL_RETRIES}회 재시도했지만 오류가 발생했습니다.",
     }
 
 
@@ -1229,6 +1247,9 @@ def _finalize_error_node(state: AgentState) -> AgentState:
 
     if state.get("final_answer"):
         return {}
+    error = state.get("error")
+    if isinstance(error, str) and error.strip():
+        return {"final_answer": f"오류가 발생했습니다: {error}"}
     return {"final_answer": "요청을 처리하는 중 오류가 발생했습니다. 질문을 조금 더 구체화해 주세요."}
 
 
