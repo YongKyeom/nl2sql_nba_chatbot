@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 
 @dataclass(frozen=True)
@@ -81,20 +81,20 @@ class LLMOperator:
     """
     LLM 호출을 모듈화한 래퍼.
 
-    OpenAI 호환 호출을 내부에서 감싼다.
+    OpenAI 호환 비동기 호출을 내부에서 감싼다.
     """
 
-    def __init__(self, *, client: OpenAI | None = None) -> None:
+    def __init__(self, *, client: AsyncOpenAI | None = None) -> None:
         """
         LLMOperator 초기화.
 
         Args:
-            client: OpenAI 클라이언트(없으면 기본 생성).
+            client: AsyncOpenAI 클라이언트(없으면 기본 생성).
         """
 
-        self._client = client or OpenAI()
+        self._client = client or AsyncOpenAI()
 
-    def invoke(self, **kwargs: Any) -> LLMResponse:
+    async def invoke(self, **kwargs: Any) -> LLMResponse:
         """
         LLM 요청을 수행하고 응답을 반환한다.
 
@@ -105,10 +105,10 @@ class LLMOperator:
             LLMResponse.
         """
 
-        response = self._client.chat.completions.create(**kwargs)
+        response = await self._client.chat.completions.create(**kwargs)
         return _convert_response(response)
 
-    def stream(self, **kwargs: Any) -> Iterator[str]:
+    async def stream(self, **kwargs: Any) -> AsyncIterator[str]:
         """
         LLM 응답을 스트리밍으로 반환한다.
 
@@ -120,8 +120,8 @@ class LLMOperator:
         """
 
         request = {**kwargs, "stream": True}
-        stream = self._client.chat.completions.create(**request)
-        for event in stream:
+        stream = await self._client.chat.completions.create(**request)
+        async for event in stream:
             if not getattr(event, "choices", None):
                 continue
             delta = event.choices[0].delta

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import json
 from pathlib import Path
@@ -95,7 +96,7 @@ class Planner:
         self._max_tool_calls = max(1, max_tool_calls)
         self._client = LLMOperator() if self._enable_tools else None
 
-    def plan(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
+    async def plan(self, user_message: str, previous_slots: PlannerSlots | None) -> PlannerOutput:
         """
         질의에서 슬롯을 추출한다.
 
@@ -162,7 +163,7 @@ class Planner:
             entity_tool_used=False,
         )
 
-    def plan_with_retry(
+    async def plan_with_retry(
         self,
         user_message: str,
         previous_slots: PlannerSlots | None,
@@ -183,7 +184,7 @@ class Planner:
         """
 
         if max_retries < 1:
-            return self.plan(user_message, previous_slots)
+            return await self.plan(user_message, previous_slots)
 
         tool_output: PlannerOutput | None = None
         metric_tool_used = False
@@ -193,7 +194,7 @@ class Planner:
 
         if self._enable_tools:
             try:
-                tool_output = self._plan_with_tools(user_message, previous_slots, previous_entities)
+                tool_output = await self._plan_with_tools(user_message, previous_slots, previous_entities)
             except Exception:
                 tool_output = None
 
@@ -233,7 +234,7 @@ class Planner:
         if previous_slots is not None:
             # 이전 슬롯이 영향을 줬을 가능성이 있어 빈 상태로 재시도한다.
             for _ in range(max_retries):
-                retry_output = self.plan(user_message, None)
+                retry_output = await self.plan(user_message, None)
                 metric_name = retry_output.slots.metric
                 if metric_name and self._registry.get(metric_name):
                     return retry_output
@@ -248,7 +249,7 @@ class Planner:
 
         return output
 
-    def _plan_with_tools(
+    async def _plan_with_tools(
         self,
         user_message: str,
         previous_slots: PlannerSlots | None,
@@ -290,7 +291,7 @@ class Planner:
             self._entity_resolver.tool_schema(),
         ]
         for _ in range(self._max_tool_calls):
-            response = self._client.invoke(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
@@ -304,14 +305,14 @@ class Planner:
                 for call in message.tool_calls:
                     args = _safe_json(call.function.arguments)
                     if call.function.name == "metric_selector":
-                        result = self._metric_selector.select(
+                        result = await self._metric_selector.select(
                             query=str(args.get("query") or user_message),
                             top_k=int(args.get("top_k") or 5),
                         )
                         metric_candidates = result.get("candidates", [])
                         metric_tool_used = True
                     elif call.function.name == "entity_resolver":
-                        result = self._entity_resolver.resolve(
+                        result = await self._entity_resolver.resolve(
                             query=str(args.get("query") or user_message),
                             previous_entities=previous_entities,
                             top_k=int(args.get("top_k") or 3),
@@ -722,20 +723,23 @@ def _needs_player_game_logs(text: str) -> bool:
 
 
 if __name__ == "__main__":
-    # 1) 레지스트리 로드
-    registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
-    registry.ensure_loaded()
-    planner = Planner(registry)
+    async def _main() -> None:
+        # 1) 레지스트리 로드
+        registry = MetricsRegistry(Path("src/metrics/metrics.yaml"))
+        registry.ensure_loaded()
+        planner = Planner(registry)
 
-    # 2) 샘플 질의 실행
-    queries = [
-        "최근 리그에서 승률 상위 5개 팀 알려줘",
-        "2018 드래프트 전체 픽 리스트 보여줘",
-        "LAL과 BOS 맞대결 최근 기록 알려줘",
-    ]
+        # 2) 샘플 질의 실행
+        queries = [
+            "최근 리그에서 승률 상위 5개 팀 알려줘",
+            "2018 드래프트 전체 픽 리스트 보여줘",
+            "LAL과 BOS 맞대결 최근 기록 알려줘",
+        ]
 
-    # 3) 슬롯 추출 결과 확인
-    for query in queries:
-        result = planner.plan(query, None)
-        print(query)
-        print(result.slots.model_dump())
+        # 3) 슬롯 추출 결과 확인
+        for query in queries:
+            result = await planner.plan(query, None)
+            print(query)
+            print(result.slots.model_dump())
+
+    asyncio.run(_main())

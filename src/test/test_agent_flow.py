@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -63,7 +64,7 @@ class _Tee:
             stream.flush()
 
 
-def run_live_query(query: str, *, scene: ChatbotScene, stream_output: bool = False) -> dict[str, object]:
+async def run_live_query(query: str, *, scene: ChatbotScene, stream_output: bool = False) -> dict[str, object]:
     """
     실제 LLM 구성으로 질의를 실행한다.
 
@@ -76,19 +77,19 @@ def run_live_query(query: str, *, scene: ChatbotScene, stream_output: bool = Fal
         에이전트 결과 딕셔너리.
     """
 
-    result = scene.ask(query)
+    result = await scene.ask(query)
     stream = result.get("final_answer_stream")
     if stream and result.get("final_answer") is None:
         parts: list[str] = []
         if stream_output:
-            for chunk in stream:
+            async for chunk in stream:
                 chunk_text = str(chunk)
                 parts.append(chunk_text)
                 print(chunk_text, end="", flush=True)
             print()
             result["streamed_output"] = True
         else:
-            for chunk in stream:
+            async for chunk in stream:
                 parts.append(str(chunk))
             result["streamed_output"] = False
         result["final_answer"] = "".join(parts).strip()
@@ -128,17 +129,28 @@ def _print_debug_and_sql(result: dict[str, object]) -> None:
         None
     """
 
-    route = result.get("route")
-    route_reason = result.get("route_reason")
-    planned_slots = result.get("planned_slots")
-    if route or route_reason or planned_slots:
+    payload = {
+        "route": result.get("route"),
+        "route_reason": result.get("route_reason"),
+        "planned_slots": result.get("planned_slots"),
+        "metric_tool_used": result.get("metric_tool_used"),
+        "entity_tool_used": result.get("entity_tool_used"),
+        "metric_candidates": result.get("metric_candidates"),
+        "entity_resolution": result.get("entity_resolution"),
+        "multi_step_plan": result.get("multi_step_plan"),
+        "schema_context": result.get("schema_context"),
+        "fewshot_examples": result.get("fewshot_examples"),
+        "column_parser_used": result.get("column_parser_used"),
+        "column_parser": result.get("column_parser"),
+        "last_result_schema": result.get("last_result_schema"),
+        "error": result.get("error"),
+        "error_detail": result.get("error_detail"),
+    }
+    filtered = {key: value for key, value in payload.items() if value is not None}
+    if filtered:
         print("\n=== Debug ===")
-        if route:
-            print(f"route: {route}")
-        if route_reason:
-            print(f"route_reason: {route_reason}")
-        if planned_slots:
-            print(f"planned_slots: {planned_slots}")
+        for key, value in filtered.items():
+            print(f"{key}: {value}")
 
     sql = result.get("sql")
     if isinstance(sql, str) and sql:
@@ -167,51 +179,54 @@ def _format_sql(sql: str) -> str:
 
 
 if __name__ == "__main__":
-    # 1) 로그 파일을 준비한다.
-    log_dir = Path("log")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    log_path = log_dir / f"test_agent_flow_{timestamp}.log"
+    async def _main() -> None:
+        # 1) 로그 파일을 준비한다.
+        log_dir = Path("log")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        log_path = log_dir / f"test_agent_flow_{timestamp}.log"
 
-    # 2) 테스트 질의 정의
-    querys: list[str] = [
-        "안녕? 넌 어떤 일을 할 수 있어?",
-        "무슨 데이터를 알려줄 수 있어?",
-        "TS% 정의 알려줘",
-        "최근 리그에서 승률 상위 5개 팀이 어디인 지 알려줘",
-        "상위 3개만",
-        "Golden State Warriors의 시즌별 성적을 비교분석해줘",
-        "2023-24 시즌 팀 득점 상위 10개 보여줘",
-        "2018 드래프트 전체 픽 리스트 보여줘",
-        "드래프트 1픽 평균 커리어 길이 알려줘",
-        "Stephen Curry 프로필 알려줘",
-        "Victor Wembanyama 컴바인 스탯 보여줘",
-        "LAL과 BOS 맞대결 최근 기록 알려줘",
-        "LeBron James vs Stephen Curry 플레이바이플레이 이벤트 빈도 알려줘",
-    ]
+        # 2) 테스트 질의 정의
+        querys: list[str] = [
+            "안녕? 넌 어떤 일을 할 수 있어?",
+            "무슨 데이터를 알려줄 수 있어?",
+            "TS% 정의 알려줘",
+            "최근 리그에서 승률 상위 5개 팀이 어디인 지 알려줘",
+            "상위 3개만",
+            "Golden State Warriors의 시즌별 성적을 비교분석해줘",
+            "2023-24 시즌 팀 득점 상위 10개 보여줘",
+            "2018 드래프트 전체 픽 리스트 보여줘",
+            "드래프트 1픽 평균 커리어 길이 알려줘",
+            "Stephen Curry 프로필 알려줘",
+            "Victor Wembanyama 컴바인 스탯 보여줘",
+            "LAL과 BOS 맞대결 최근 기록 알려줘",
+            "LeBron James vs Stephen Curry 플레이바이플레이 이벤트 빈도 알려줘",
+        ]
 
-    # 3) 대화 메모리/Scene 초기화(멀티턴 유지)
-    config = load_config()
-    scene = _build_scene(config)
+        # 3) 대화 메모리/Scene 초기화(멀티턴 유지)
+        config = load_config()
+        scene = _build_scene(config)
 
-    # 4) 콘솔과 로그 파일에 동시에 출력한다.
-    with log_path.open("w", encoding="utf-8") as log_file:
-        tee_stdout = _Tee(sys.stdout, log_file)
-        tee_stderr = _Tee(sys.stderr, log_file)
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        try:
-            sys.stdout = tee_stdout
-            sys.stderr = tee_stderr
-            for query in querys:
-                print("\n=== 질문 ===")
-                print(query)
-                print("\n=== 답변 ===")
-                result = run_live_query(query, scene=scene, stream_output=True)
-                if not result.get("streamed_output"):
-                    print(result.get("final_answer"))
-                _print_debug_and_sql(result)
-            print()
-        finally:
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
+        # 4) 콘솔과 로그 파일에 동시에 출력한다.
+        with log_path.open("w", encoding="utf-8") as log_file:
+            tee_stdout = _Tee(sys.stdout, log_file)
+            tee_stderr = _Tee(sys.stderr, log_file)
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+            try:
+                sys.stdout = tee_stdout
+                sys.stderr = tee_stderr
+                for query in querys:
+                    print("\n=== 질문 ===")
+                    print(query)
+                    print("\n=== 답변 ===")
+                    result = await run_live_query(query, scene=scene, stream_output=True)
+                    if not result.get("streamed_output"):
+                        print(result.get("final_answer"))
+                    _print_debug_and_sql(result)
+                print()
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+
+    asyncio.run(_main())

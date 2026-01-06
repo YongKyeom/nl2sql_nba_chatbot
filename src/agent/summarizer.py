@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from src.model.llm_operator import LLMOperator
@@ -47,7 +48,7 @@ class Summarizer:
         self._model = model
         self._temperature = temperature
 
-    def summarize(self, payload: SummaryInput, *, stream: bool = False) -> str | Iterator[str]:
+    async def summarize(self, payload: SummaryInput, *, stream: bool = False) -> str | AsyncIterator[str]:
         """
         요약 텍스트를 생성.
 
@@ -76,7 +77,7 @@ class Summarizer:
                 messages=messages,
             )
 
-        response = self._client.invoke(
+        response = await self._client.invoke(
             model=self._model,
             temperature=self._temperature,
             messages=messages,
@@ -85,16 +86,18 @@ class Summarizer:
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 Summarizer 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 Summarizer 테스트를 건너뜁니다.")
+            return
+
         # 2) 요약 생성 테스트
         from src.config import load_config
 
         config = load_config()
         summarizer = Summarizer(model=config.model, temperature=0.0)
-        result = summarizer.summarize(
+        result = await summarizer.summarize(
             SummaryInput(
                 user_question="최근 시즌 승률 상위 3개 팀 알려줘",
                 sql="SELECT team_name, pct FROM team LIMIT 3",
@@ -106,3 +109,5 @@ if __name__ == "__main__":
             )
         )
         print(result)
+
+    asyncio.run(_main())

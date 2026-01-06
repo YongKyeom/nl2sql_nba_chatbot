@@ -189,7 +189,7 @@ class RouterLLM:
         self._model = model
         self._temperature = temperature
 
-    def _invoke_router(self, prompt: str, *, force_json: bool) -> str:
+    async def _invoke_router(self, prompt: str, *, force_json: bool) -> str:
         """
         라우터 전용 LLM 호출을 수행한다.
 
@@ -212,10 +212,10 @@ class RouterLLM:
         if force_json:
             request["response_format"] = {"type": "json_object"}
 
-        response = self._client.invoke(**request)
+        response = await self._client.invoke(**request)
         return response.choices[0].message.content or ""
 
-    def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:
+    async def route(self, context: RoutingContext, registry: MetricsRegistry) -> RouterResult:
         """
         라우팅을 결정한다.
 
@@ -240,11 +240,11 @@ class RouterLLM:
             available_metrics=context.available_metrics,
         )
         try:
-            content = self._invoke_router(prompt, force_json=True)
+            content = await self._invoke_router(prompt, force_json=True)
             parsed = _parse_router_json(content)
         except Exception:  # noqa: BLE001
             try:
-                content = self._invoke_router(prompt, force_json=False)
+                content = await self._invoke_router(prompt, force_json=False)
                 parsed = _parse_router_json(content)
             except Exception:  # noqa: BLE001
                 return _fallback_route(

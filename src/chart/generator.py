@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -37,7 +38,7 @@ class ChartGenerator:
 
         object.__setattr__(self, "_client", LLMOperator())
 
-    def generate(
+    async def generate(
         self,
         *,
         user_question: str,
@@ -72,7 +73,7 @@ class ChartGenerator:
             chart_type_guide=format_chart_type_guide(),
             chart_type_list=", ".join(SUPPORTED_CHART_TYPES),
         )
-        response = self._client.invoke(
+        response = await self._client.invoke(
             model=self.model,
             temperature=self.temperature,
             response_format={"type": "json_object"},
@@ -86,14 +87,17 @@ class ChartGenerator:
 
 
 if __name__ == "__main__":
-    # 1) 차트 생성기를 구성한다.
-    generator = ChartGenerator(model="gpt-4o-mini", temperature=0.0)
-    # 2) 샘플 입력으로 차트 스펙을 확인한다.
-    print(
-        generator.generate(
-            user_question="관중 상위 팀 그래프로 보여줘",
-            columns=["team_name", "avg_attendance"],
-            numeric_columns=["avg_attendance"],
-            sample_records="[{'team_name': 'BOS', 'avg_attendance': 19000}]",
+    async def _main() -> None:
+        # 1) 차트 생성기를 구성한다.
+        generator = ChartGenerator(model="gpt-4o-mini", temperature=0.0)
+        # 2) 샘플 입력으로 차트 스펙을 확인한다.
+        print(
+            await generator.generate(
+                user_question="관중 상위 팀 그래프로 보여줘",
+                columns=["team_name", "avg_attendance"],
+                numeric_columns=["avg_attendance"],
+                sample_records="[{'team_name': 'BOS', 'avg_attendance': 19000}]",
+            )
         )
-    )
+
+    asyncio.run(_main())

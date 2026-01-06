@@ -66,7 +66,7 @@ class MultiStepPlanner:
         self._model = model
         self._temperature = temperature
 
-    def plan(self, payload: MultiStepPlanInput) -> MultiStepPlanResult:
+    async def plan(self, payload: MultiStepPlanInput) -> MultiStepPlanResult:
         """
         멀티 스텝 계획을 결정한다.
 
@@ -84,7 +84,7 @@ class MultiStepPlanner:
             context_hint=payload.context_hint or "없음",
         )
         try:
-            response = self._client.invoke(
+            response = await self._client.invoke(
                 model=self._model,
                 temperature=self._temperature,
                 response_format={"type": "json_object"},

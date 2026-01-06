@@ -1,13 +1,16 @@
 # ruff: noqa: E402, I001
 from __future__ import annotations
 
+import asyncio
 import base64
+import queue
 import re
 import sys
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 
 import pandas as pd
 import streamlit as st
@@ -83,6 +86,7 @@ THINKING_STEP_ORDER = [
 
 THINKING_STATUS_RUNNING = "running"
 THINKING_STATUS_DONE = "done"
+T = TypeVar("T")
 
 
 class StreamlitChatApp:
@@ -823,7 +827,7 @@ class StreamlitChatApp:
                     )
                     chart_image_path = chart_result.path
 
-        use_llm_stream = isinstance(final_answer_stream, Iterator)
+        use_llm_stream = isinstance(final_answer_stream, AsyncIterator)
         base_answer = ""
         if use_llm_stream:
             base_answer = self._stream_llm_answer(final_answer_stream)
@@ -1013,7 +1017,8 @@ class StreamlitChatApp:
         sql_in_progress = False
 
         try:
-            for event in scene.orchestrator.stream(user_message):
+            async_iter = scene.orchestrator.stream(user_message)
+            for event in self._sync_from_async_iter(async_iter):
                 if not isinstance(event, dict):
                     continue
                 event_type = event.get("event_type")
@@ -1057,18 +1062,19 @@ class StreamlitChatApp:
                         schema_context=state.get("schema_context"),
                         message_index=len(st.session_state.messages),
                         thinking_status=thinking_status,
+                        is_final=event_type == "final",
                     )
         except Exception:
             placeholder.empty()
-            return scene.ask(user_message)
+            return self._run_async(scene.ask(user_message))
 
         if final_state is None:
             placeholder.empty()
-            return scene.ask(user_message)
+            return self._run_async(scene.ask(user_message))
 
         if final_state.get("final_answer") is None and final_state.get("final_answer_stream") is None:
             placeholder.empty()
-            return scene.ask(user_message)
+            return self._run_async(scene.ask(user_message))
 
         final_state["thinking_status"] = thinking_status
         return final_state
@@ -1235,6 +1241,7 @@ class StreamlitChatApp:
         schema_context: str | None,
         message_index: int,
         thinking_status: dict[str, str] | None = None,
+        is_final: bool = True,
     ) -> None:
         """
         Thinking(단계별 상태)을 렌더링한다.
@@ -1256,6 +1263,7 @@ class StreamlitChatApp:
             schema_context: 선별된 스키마 컨텍스트.
             message_index: 메시지 인덱스(고유 키용).
             thinking_status: 단계별 상태 딕셔너리(스트리밍용).
+            is_final: 최종 상태 여부(True면 접힌 상태로 렌더링).
 
         Side Effects:
             Thinking 패널 UI를 렌더링한다.
@@ -1268,7 +1276,7 @@ class StreamlitChatApp:
         if thinking_status:
             has_running = any(value == THINKING_STATUS_RUNNING for value in thinking_status.values())
             status_label = "⏳ Thinking" if has_running else "✅ Thinking"
-        with st.expander(status_label, expanded=False):
+        with st.expander(status_label, expanded=not is_final):
 
             def _render_step(label: str, status: str, data: dict[str, object] | None) -> None:
                 icon = "✅" if status == THINKING_STATUS_DONE else "⏳"
@@ -1608,11 +1616,13 @@ class StreamlitChatApp:
         columns = list(dataframe.columns)
         sample_records = dataframe.head(5).to_dict(orient="records")
         try:
-            spec = chart_generator.generate(
-                user_question=user_text,
-                columns=columns,
-                numeric_columns=numeric_columns,
-                sample_records=str(sample_records),
+            spec = self._run_async(
+                chart_generator.generate(
+                    user_question=user_text,
+                    columns=columns,
+                    numeric_columns=numeric_columns,
+                    sample_records=str(sample_records),
+                )
             )
         except Exception:
             spec = {}
@@ -1913,6 +1923,64 @@ class StreamlitChatApp:
 
         return bool(re.match(r"^\|?\s*[-:|\s]+\s*\|?$", line.strip()))
 
+    def _run_async(self, coro: Awaitable[T]) -> T:
+        """
+        코루틴을 동기 컨텍스트에서 실행한다.
+
+        Args:
+            coro: 실행할 코루틴.
+
+        Returns:
+            코루틴 결과.
+        """
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+    def _sync_from_async_iter(self, async_iter: AsyncIterator[T]) -> Iterator[T]:
+        """
+        AsyncIterator를 동기 이터레이터로 변환한다.
+
+        Args:
+            async_iter: 비동기 이터레이터.
+
+        Yields:
+            스트리밍 아이템.
+        """
+
+        item_queue: queue.Queue[object] = queue.Queue()
+        sentinel = object()
+
+        def _runner() -> None:
+            async def _consume() -> None:
+                try:
+                    async for item in async_iter:
+                        item_queue.put(item)
+                except Exception as exc:  # noqa: BLE001
+                    item_queue.put(exc)
+                finally:
+                    item_queue.put(sentinel)
+
+            asyncio.run(_consume())
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+
+        while True:
+            item = item_queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item  # type: ignore[misc]
+
+        thread.join()
+
     def _stream_text(self, text: str, chunk_size: int = 24, delay_sec: float = 0.01) -> Iterator[str]:
         """
         텍스트를 일정 크기씩 나눠 스트리밍용 청크로 반환한다.
@@ -1941,7 +2009,7 @@ class StreamlitChatApp:
             if delay_sec > 0:
                 time.sleep(delay_sec)
 
-    def _stream_llm_answer(self, stream: Iterator[str]) -> str:
+    def _stream_llm_answer(self, stream: AsyncIterator[str]) -> str:
         """
         LLM 스트리밍 응답을 출력하면서 전체 텍스트를 수집한다.
 
@@ -1955,7 +2023,7 @@ class StreamlitChatApp:
         parts: list[str] = []
 
         def _collector() -> Iterator[str]:
-            for chunk in stream:
+            for chunk in self._sync_from_async_iter(stream):
                 text = str(chunk)
                 parts.append(text)
                 yield text
@@ -2254,7 +2322,7 @@ section[data-testid="stSidebar"] [data-testid="stPopoverButton"] button {
             return
 
         try:
-            title = title_generator.generate(user_message)
+            title = self._run_async(title_generator.generate(user_message))
         except Exception:
             return
 

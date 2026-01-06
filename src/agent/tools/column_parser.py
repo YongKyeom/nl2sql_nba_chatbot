@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -68,7 +69,7 @@ class ColumnParser:
             },
         }
 
-    def parse(self, *, sql: str) -> dict[str, Any]:
+    async def parse(self, *, sql: str) -> dict[str, Any]:
         """
         SQL을 파싱하고 스키마 정보를 보강한다.
 
@@ -80,12 +81,12 @@ class ColumnParser:
         """
 
         try:
-            parsed = self._parse_with_llm(sql)
+            parsed = await self._parse_with_llm(sql)
         except Exception:
             parsed = {}
         return self._enrich_with_schema(sql, parsed)
 
-    def _parse_with_llm(self, sql: str) -> dict[str, Any]:
+    async def _parse_with_llm(self, sql: str) -> dict[str, Any]:
         """
         LLM으로 테이블/컬럼 파싱을 수행한다.
 
@@ -100,7 +101,7 @@ class ColumnParser:
             sql=sql.strip(),
             available_tables=", ".join(self.schema_store.list_tables()),
         )
-        response = self._client.invoke(
+        response = await self._client.invoke(
             model=self.model,
             temperature=self.temperature,
             response_format={"type": "json_object"},
@@ -281,20 +282,25 @@ def _extract_cte_names(sql: str) -> set[str]:
 
 
 if __name__ == "__main__":
-    # 1) API 키 확인: 없으면 파서 테스트를 건너뛴다.
-    config = load_config()
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY가 없어 ColumnParser 테스트를 건너뜁니다.")
-    else:
+    async def _main() -> None:
+        # 1) API 키 확인: 없으면 파서 테스트를 건너뛴다.
+        config = load_config()
+        if not os.getenv("OPENAI_API_KEY"):
+            print("OPENAI_API_KEY가 없어 ColumnParser 테스트를 건너뜁니다.")
+            return
+
         # 2) 스키마 로드 후 샘플 SQL을 파싱한다.
         if not config.schema_json_path.exists():
             print(f"schema.json이 없습니다: {config.schema_json_path}")
-        else:
-            schema_store = SchemaStore(config.schema_json_path)
-            schema_store.ensure_loaded()
-            parser = ColumnParser(model=config.model, temperature=0.0, schema_store=schema_store)
-            sample_sql = (
-                "SELECT team_abbreviation, AVG(pts_home) AS avg_pts "
-                "FROM game WHERE season_id = '22022' GROUP BY team_abbreviation LIMIT 5"
-            )
-            print(parser.parse(sql=sample_sql))
+            return
+
+        schema_store = SchemaStore(config.schema_json_path)
+        schema_store.ensure_loaded()
+        parser = ColumnParser(model=config.model, temperature=0.0, schema_store=schema_store)
+        sample_sql = (
+            "SELECT team_abbreviation, AVG(pts_home) AS avg_pts "
+            "FROM game WHERE season_id = '22022' GROUP BY team_abbreviation LIMIT 5"
+        )
+        print(await parser.parse(sql=sample_sql))
+
+    asyncio.run(_main())
