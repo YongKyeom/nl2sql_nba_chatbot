@@ -28,17 +28,17 @@ PLANNER_PROMPT = dedent(
 
 도구 입력/출력 요약:
 - metric_selector 입력:
-  { "query": "...", "top_k": 5 }
+  {{ "query": "...", "top_k": 5 }}
   출력:
-  { "candidates": [ { "name": "...", "aliases": [...], "description_ko": "...", "formula_ko": "...",
-                     "required_tables": [...], "required_columns": [...] } ], "count": N }
+  {{ "candidates": [ {{ "name": "...", "aliases": [...], "description_ko": "...", "formula_ko": "...",
+                     "required_tables": [...], "required_columns": [...] }} ], "count": N }}
 - entity_resolver 입력:
-  { "query": "...", "previous_entities": { "teams": [...], "players": [...] }, "top_k": 3 }
+  {{ "query": "...", "previous_entities": {{ "teams": [...], "players": [...] }}, "top_k": 3 }}
   출력:
-  { "teams": [ { "team_abbreviation": "...", "team_name": "...", "city": "...", "nickname": "..." } ],
-    "players": [ { "player_name": "...", "person_id": "...", "team_abbreviation": "..." } ],
-    "filters": { "team_abbreviation": "...", "team_abbreviation_in": [...], "player_name": "..." },
-    "has_match": true|false }
+  {{ "teams": [ {{ "team_abbreviation": "...", "team_name": "...", "city": "...", "nickname": "..." }} ],
+    "players": [ {{ "player_name": "...", "person_id": "...", "team_abbreviation": "..." }} ],
+    "filters": {{ "team_abbreviation": "...", "team_abbreviation_in": [...], "player_name": "..." }},
+    "has_match": true|false }}
 
 활용 가이드:
 - metric_selector 결과는 `metric` 선택에 직접 활용하고, 애매할 때는 후보 1~2개를 비교해 결정한다.
@@ -46,17 +46,17 @@ PLANNER_PROMPT = dedent(
 - 도구 결과가 비어 있으면 규칙 기반 결과를 유지하거나 필요한 정보를 `clarify_question`으로 요청한다.
 
 출력 형식(반드시 JSON):
-{
-  "slots": {
+{{
+  "slots": {{
     "entity_type": "team|player|game",
     "season": "2022-23",
     "date_range": "최근|전체",
     "metric": "metric_name",
     "top_k": 10,
-    "filters": { "...": "..." }
-  },
+    "filters": {{ "...": "..." }}
+  }},
   "clarify_question": "..."
-}
+}}
 
 주의:
 - 출력은 JSON만, 설명/코드블록 금지.
