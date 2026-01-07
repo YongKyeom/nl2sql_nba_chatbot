@@ -9,7 +9,8 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 - **Scene/Orchestrator 구조**로 Streamlit/로컬 러너가 동일한 경로로 실행됩니다.
 - **LLM 라우터 + 플래너 + SQL 생성/가드 + 요약**까지 end-to-end 파이프라인 제공.
 - **Tool 기반 보강**: MetricSelector/EntityResolver/ColumnParser로 메트릭 선택, 엔티티 보강, 컬럼 검증을 수행.
-- **단기/장기 메모리 분리**로 멀티턴 문맥과 사용자 선호(기본 시즌 등) 유지.
+- **단기/장기 메모리 분리 + 대화 요약**으로 멀티턴 문맥과 사용자 선호(기본 시즌 등) 유지.
+- **대화 히스토리 DB(chat_history.sqlite)** 로 채팅별 요약/복원이 Streamlit 재기동 이후에도 유지됨.
 - **SQL Guard + 결과 검증 재시도**로 안정성 강화.
 - **이전 결과 재사용(정렬/필터/Top-K)** 및 일반 안내 응답 지원.
 - **멀티스텝 플래닝**으로 복합 질의를 단계별 SQL로 처리.
@@ -28,8 +29,8 @@ NBA SQLite DB를 기반으로 자연어 질의를 SQL로 변환하고, 결과를
 Kaggle에서 내려받은 압축 파일에는 SQLite 파일이 포함되어 있습니다. 아래 기준으로 정리해 주세요.
 
 1. Kaggle에서 데이터셋을 다운로드합니다.
-2. 압축을 해제한 뒤 파일명을 `nba.sqlite` 으로 변경하세요.
-3. 프로젝트의 `data/` 폴더에 복사합니다.
+2. 압축을 해제한 뒤, 폴더 안에서 `*.sqlite` 파일을 확인합니다. (파일명이 환경마다 다를 수 있습니다)
+3. 해당 SQLite 파일을 `data/nba.sqlite`로 복사하거나, 파일명을 그대로 둘 경우 `.env`의 `DB_PATH`를 실제 파일명으로 맞춥니다.
 
 ## 데이터셋 상세
 
@@ -85,7 +86,10 @@ OPENAI_TEMPERATURE=0.2
 DB_PATH=data/nba.sqlite
 MEMORY_DB_PATH=result/memory.sqlite
 CHAT_DB_PATH=result/chat.sqlite
+HISTORY_DB_PATH=result/chat_history.sqlite
 FEWSHOT_CANDIDATE_LIMIT=3
+CONVERSATION_SUMMARY_CHAR_LIMIT=10000
+CONVERSATION_SUMMARY_KEEP_TURNS=3
 ```
 
 ### 로컬 설치
@@ -119,6 +123,7 @@ python -m src.db.schema_dump
 - **중간 에이전트 모델 선택**: 라우팅/플래닝/few-shot/SQL 생성에 사용할 모델(`OPENAI_MODEL`)을 선택합니다.
   - 기본값: `gpt-4.1-mini` (선택지: `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o-mini`)
 - **최종 답변 모델**: 조회가 끝난 뒤 요약/최종 응답은 `FINAL_ANSWER_MODEL`로 고정됩니다(기본 `gpt-4.1-nano`).
+- **대화 요약 모델**: 대화 요약도 `FINAL_ANSWER_MODEL`로 생성합니다(temperature=0.0).
 - **Dataset Info**: 데이터셋 요약/출처/테이블/지표 목록 표시
 - **추천 질의**: 클릭으로 빠른 질문 실행
 - **결과 요약 카드**: Rows/Season/Metric/Top-K 표시
@@ -137,6 +142,9 @@ Streamlit과 동일한 Scene/오케스트레이터 구성으로 로컬 실행합
 ```bash
 python src/test/test_agent_flow.py
 ```
+
+- 실행 중 생성되는 대화 히스토리는 `HISTORY_DB_PATH`(기본 `result/chat_history.sqlite`)에 저장되며,
+  마지막에 LangChain 메시지 포맷으로 `pretty_print()` 출력도 함께 확인할 수 있습니다.
 
 ## 단위 테스트
 
@@ -175,26 +183,40 @@ python src/test/test_chain_unit.py
 - **단기 메모리 엔티티**: 직전 결과에서 추출한 팀/선수 목록을 저장해 후속 질의를 보강합니다.
 - **장기 메모리**: 자주 묻는 시즌/팀/지표 등 선호를 사용자 단위로 SQLite에 누적합니다.
 
+### 대화 요약(Conversation Summary)
+
+- 대화가 길어질수록 프롬프트 토큰이 불어나기 때문에, 일정 길이를 넘으면 **과거 대화를 요약**하고 최근 대화만 유지합니다.
+- 기본 정책:
+  - 전체 대화(요약 + 최근 턴)가 `CONVERSATION_SUMMARY_CHAR_LIMIT`(기본 10000자)를 넘으면 요약을 생성
+  - 요약 이후에는 최근 `CONVERSATION_SUMMARY_KEEP_TURNS`(기본 3턴: 사용자+AI 페어)만 유지
+- **대화 맥락(conversation_context)** 은 `요약 + 최근 N턴`을 합친 문자열로 구성되고, 아래 4개 에이전트에만 주입됩니다.
+  - Router / Planner / Responder / Summarizer
+  - SQL 생성/가드/실행에는 주입하지 않아 “대화 잡음”으로 SQL 품질이 흔들리는 걸 줄입니다.
+
 ## 채팅 세션
 
-- 채팅 목록은 `CHAT_DB_PATH` SQLite에 저장됩니다.
+- 채팅 목록/메시지 UI 로그는 `CHAT_DB_PATH` SQLite에 저장됩니다.
 - 첫 질문 입력 후 제목을 한 번 자동 생성하고 이후 고정합니다.
 - 채팅별로 메시지/표/메타가 저장되어 새로고침 없이 복원됩니다.
 - 로컬 개발 기본 사용자 ID는 `developer`로 고정되어 있습니다(`src/app.py`의 `DEFAULT_USER_ID`).
 
-## 로컬 SQLite 가이드 (Agent 메모리 / Chat 히스토리)
+## 로컬 SQLite 가이드 (Agent 메모리 / Chat 로그 / 대화 히스토리)
 
 ### 생성 시점
 
-- `result/chat.sqlite` (Chat 히스토리): Streamlit 실행 중 최초 채팅 생성 시 자동 생성
+- `result/chat.sqlite` (Chat 로그/UI 복원용): Streamlit 실행 중 최초 채팅 생성 시 자동 생성
+- `result/chat_history.sqlite` (대화 히스토리/요약): 사용자 질문/최종 답변 및 요약 상태를 저장(자동 생성)
 - `result/memory.sqlite` (Agent 메모리): 장기 메모리에 선호/프로필 기록 시 자동 생성
 - 별도의 수동 생성 작업은 필요하지 않습니다.
 
 ### 스키마 요약
 
-- `chat.sqlite` (Chat 히스토리)
+- `chat.sqlite` (Chat 로그/UI 복원용)
   - `chat_sessions`: 채팅 목록 메타(사용자 ID, 제목, 생성/갱신 시각)
   - `chat_messages`: 채팅별 메시지/메타 JSON 기록
+- `chat_history.sqlite` (대화 히스토리/요약)
+  - `chat_history_messages`: 사용자 질문/최종 답변 원문(요약 입력 및 복원용, SQL/디버그는 저장하지 않음)
+  - `chat_history_state`: 채팅별 요약 텍스트 및 갱신 시각
 - `memory.sqlite` (Agent 메모리)
   - `preference_counts`: 선호 카운트(카테고리, 값, 횟수)
   - `user_profile`: 사용자 기본값(예: 기본 시즌)
@@ -258,7 +280,7 @@ python src/validate_metrics.py \
 flowchart TD
   U["User"] --> S["Scene"]
   S --> O["Orchestrator"]
-  O --> M["Memory<br/>단기(최근 결과/엔티티)<br/>장기(선호/기본값)"]
+  O --> M["Memory<br/>단기(최근 결과/엔티티/요약)<br/>장기(선호/기본값)"]
 
   O --> R["Router"]
   R --> GA["General Answer"]
@@ -277,7 +299,9 @@ flowchart TD
   SG <--> CP["ColumnParser Tool"]
 
   O --> TS["Title Generator"]
-  O --> CS["Chat Store"]
+  O --> CS["Chat Store<br/>(chat.sqlite)"]
+  O --> HS["History Store<br/>(chat_history.sqlite)"]
+  O --> CSM["Conversation Summarizer"]
 
   MS --> G["SQL Guard"]
   SG --> G
@@ -301,6 +325,8 @@ flowchart TD
 
 - **Scene (`src/agent/scene.py`)**: Streamlit/로컬 테스트에서 동일한 실행 경로를 제공하는 래퍼입니다. `ask()`로 오케스트레이터를 호출하고, `reset()`으로 대화 메모리를 초기화합니다.
 - **Orchestrator (`src/agent/orchestrator.py`)**: 레지스트리/스키마 로드, 체인 구성, 스트리밍 실행을 담당합니다. 예외 발생 시 안전한 폴백 응답을 만들고, 턴 시작/종료 시 메모리를 업데이트합니다.
+- **LLMOperator (`src/model/llm_operator.py`)**: OpenAI 호환 API 호출을 감싸는 얇은 래퍼입니다. `.invoke()`(일반 호출)와 `.stream()`(스트리밍)을 공통 인터페이스로 제공합니다.
+- **Conversation Summarizer (`src/agent/conversation_summarizer.py`)**: 대화가 길어지면 과거 대화를 요약해 단기 메모리의 `summary_text`로 저장합니다.
 - **Router (`src/agent/router.py`)**: LLM 라우터가 기본이며 JSON 파싱 실패 시 키워드 폴백을 수행합니다.  
   메트릭 별칭을 통해 Direct/Reuse/SQL_REQUIRED를 분기하고 `route_reason`을 기록합니다.
 - **Planner (`src/agent/planner.py`)**: 엔티티/시즌/기간/지표/Top-K 슬롯을 구성하고, 부족하면 `clarify_question`을 제공합니다. Tool 호출을 통해 메트릭 후보/엔티티 보강을 수행하고, 메트릭 누락 시 레지스트리 기준으로 재시도합니다.
